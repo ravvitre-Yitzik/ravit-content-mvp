@@ -25,6 +25,12 @@ def _value(v):
     return UNAVAILABLE if v is None or v == "" else v
 
 
+def _safe_text(text):
+    """Free text from providers or the user: keep spreadsheet apps from running it as a formula."""
+    text = text or ""
+    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
 def package_status(result):
     if not result.get("ok"):
         return "נכשל"
@@ -59,7 +65,7 @@ def rows_for_run(run_path):
             "provider": r.get("provider"),
             "model": r.get("model"),
             "status": package_status(r),
-            "structure_errors": "; ".join(r.get("structure_errors") or []) or (r.get("error") or ""),
+            "structure_errors": _safe_text("; ".join(r.get("structure_errors") or []) or r.get("error")),
             "input_tokens": _value(usage.get("input_tokens")),
             "output_tokens": _value(usage.get("output_tokens")),
             "input_price": _value(rate.get("input_price")),
@@ -71,7 +77,7 @@ def rows_for_run(run_path):
             "comparison_cost": _value(total.get("total") if total.get("available") else None),
             "score": _value(scores.get(label)),
             "choice": _value(grading.get("choice")),
-            "note": grading.get("note") or "",
+            "note": _safe_text(grading.get("note")),
             "prompt_sha256": hashlib.sha256(run.get("prompt", "").encode("utf-8")).hexdigest()[:16],
             "full_output": f"runs/{run_path.name}",
         })

@@ -102,12 +102,14 @@ def main(argv, call_gemini=providers.call_gemini, call_anthropic=providers.call_
     prompt = sample_prompt()
     run = {"run_id": datetime.now().strftime("%Y%m%d-%H%M%S"), "date": datetime.now().isoformat(timespec="seconds"),
            "property": "data/sample-property.json (fictional)", "prompt": prompt, "results": []}
-    for name, call in (("GEMINI_API_KEY", call_gemini), ("ANTHROPIC_API_KEY", call_anthropic)):
-        key = read_key(name)
-        if not key:
-            print(f"נכשל: לא נמצא ערך ל־{name} בקובץ .env")
-            return 1
-        run["results"].append(evaluate(call(prompt, key), rates))
+    calls = (("GEMINI_API_KEY", call_gemini), ("ANTHROPIC_API_KEY", call_anthropic))
+    keys = {name: read_key(name) for name, _ in calls}
+    missing = [name for name, key in keys.items() if not key]
+    if missing:  # check before any call, so a run is never half-done and unsaved
+        print(f"נכשל לפני כל קריאה: לא נמצא ערך ל־{', '.join(missing)} בקובץ .env")
+        return 1
+    for name, call in calls:
+        run["results"].append(evaluate(call(prompt, keys[name]), rates))
 
     run["total_cost"] = comparison_total([r["cost"] for r in run["results"]])
     path = save_run(run)

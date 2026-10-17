@@ -200,6 +200,14 @@ def test_run_sends_same_prompt_to_both_and_saves(monkeypatch):
     assert KEY not in json.dumps(run, ensure_ascii=False, default=str)
 
 
+def test_missing_key_stops_before_any_call(monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr(run_generation, "read_key", lambda name: KEY if name == "GEMINI_API_KEY" else "")
+    result = run_generation.main(["run_generation.py", "--run"], lambda *a: called.append(a), lambda *a: called.append(a))
+    assert result == 1 and called == []
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().out
+
+
 def test_save_run_writes_json(tmp_path):
     path = run_generation.save_run({"run_id": "t1", "amount": Decimal("0.5")}, tmp_path)
     assert json.loads(path.read_text(encoding="utf-8")) == {"run_id": "t1", "amount": "0.5"}

@@ -144,6 +144,17 @@ def test_log_is_rebuilt_without_duplicates(runs):
     assert len(read_log(runs)) == 2
 
 
+def test_log_neutralizes_spreadsheet_formulas(runs):
+    failed = result("Google", "m-a", ok=False, available=False)
+    failed["error"] = "=HYPERLINK(\"http://x\")"
+    path, run = write_run(runs, "r3", [failed, result("Anthropic", "m-b")])
+    grading.save_grading(path, run, {"ב": 2}, "ב", "+cmd")
+    run_log.write_log()
+    rows = read_log(runs)
+    assert rows[0]["structure_errors"].startswith("'=")
+    assert rows[1]["note"] == "'+cmd"
+
+
 def test_grading_files_are_not_read_as_runs(runs):
     path, run = two_ok(runs)
     grading.save_grading(path, run, {"א": 1, "ב": 2}, "אף אחת")
