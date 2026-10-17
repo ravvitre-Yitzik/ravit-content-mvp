@@ -1,0 +1,32 @@
+{
+  "example_id": "fictional-sample",
+  "data_note": "נכס בדיוני לגמרי לשיתוף ולבדיקות. אינו נכס אמיתי, וההתרשמות אינה של רוית",
+  "sources": {
+    "fictional": "נכתב לצורך הדגמה בלבד"
+  },
+  "fields": {
+    "deal_type":            { "status": "known",        "value": "מכירה", "source": "fictional" },
+    "city":                 { "status": "known",        "value": "עיר לדוגמה", "source": "fictional" },
+    "street":               { "status": "known",        "value": "רחוב הדוגמה", "source": "fictional" },
+    "building_number":      { "status": "known",        "value": "1", "source": "fictional" },
+    "floor":                { "status": "unknown",      "value": null },
+    "total_floors":         { "status": "unknown",      "value": null },
+    "area_sqm":             { "status": "known",        "value": 90, "source": "fictional" },
+    "rooms":                { "status": "known",        "value": 3, "source": "fictional" },
+    "balcony":              { "status": "not_existing", "value": false, "source": "fictional" },
+    "balcony_area_sqm":     { "status": "not_existing", "value": null, "source": "fictional" },
+    "garden":               { "status": "known",        "value": true, "source": "fictional" },
+    "garden_area_sqm":      { "status": "unknown",      "value": null },
+    "storage":              { "status": "unknown",      "value": null },
+    "safe_room":            { "status": "unknown",      "value": null },
+    "building_shelter":     { "status": "unknown",      "value": null },
+    "condition":            { "status": "unknown",      "value": null },
+    "price":                { "status": "known",        "value": 1000000, "source": "fictional" },
+    "elevator":             { "status": "unknown",      "value": null },
+    "parking":              { "status": "unknown",      "value": null },
+    "ravit_impression":     { "status": "known",        "value": "טקסט בדיוני לבדיקה: הגינה מרגישה כמו חדר נוסף בבית.", "source": "fictional" },
+    "verified_surroundings":{ "status": "unknown",      "value": null },
+    "availability":         { "status": "unknown",      "value": null },
+    "additional_details":   { "status": "unknown",      "value": null }
+  }
+}

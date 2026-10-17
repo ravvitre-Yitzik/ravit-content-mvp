@@ -1,0 +1,124 @@
+{
+  "template_version": "1",
+  "rules": {
+    "statuses": {
+      "known": "ערך ידוע, נמסר בפועל",
+      "unknown": "לא ידוע; אסור להסיק או להשלים",
+      "not_existing": "ידוע שאינו קיים בנכס",
+      "conflicting": "נמסרו ערכים סותרים; עוצר את ההפקה עד לתיקון"
+    },
+    "required_fields_need": "known",
+    "any_conflicting_field": "stop_before_providers",
+    "no_inference": "אין להסיק מידע חסר, למשל גודל מרפסת כאשר שטחה לא נמסר"
+  },
+  "fields": {
+    "deal_type": {
+      "label": "סוג עסקה",
+      "required": true,
+      "allowed_values": ["מכירה", "השכרה"]
+    },
+    "city": {
+      "label": "עיר",
+      "required": true
+    },
+    "street": {
+      "label": "רחוב",
+      "required": true
+    },
+    "building_number": {
+      "label": "מספר בניין",
+      "required": true,
+      "publishable": false,
+      "note": "נשלח לספקים כמידע פנימי לאיתור הנכס; אסור שיופיע בפוסט או במשפטי השיתוף"
+    },
+    "floor": {
+      "label": "קומה",
+      "required": false
+    },
+    "total_floors": {
+      "label": "מספר הקומות בבניין",
+      "required": false
+    },
+    "area_sqm": {
+      "label": "שטח (מ״ר)",
+      "required": true
+    },
+    "rooms": {
+      "label": "מספר חדרים",
+      "required": true,
+      "note": "לפי המוסכמה בישראל: סך החדרים כולל סלון, לא מספר חדרי שינה"
+    },
+    "balcony": {
+      "label": "מרפסת",
+      "required": false,
+      "allowed_values": [true, false]
+    },
+    "balcony_area_sqm": {
+      "label": "שטח מרפסת (מ״ר)",
+      "required": false
+    },
+    "garden": {
+      "label": "גינה",
+      "required": false,
+      "allowed_values": [true, false]
+    },
+    "garden_area_sqm": {
+      "label": "שטח גינה (מ״ר)",
+      "required": false
+    },
+    "storage": {
+      "label": "מחסן",
+      "required": false,
+      "allowed_values": [true, false]
+    },
+    "safe_room": {
+      "label": "ממ״ד",
+      "required": false,
+      "allowed_values": [true, false]
+    },
+    "building_shelter": {
+      "label": "מקלט בבניין",
+      "required": false,
+      "allowed_values": [true, false],
+      "note": "רלוונטי כאשר אין ממ״ד"
+    },
+    "condition": {
+      "label": "מצב הדירה",
+      "required": false
+    },
+    "price": {
+      "label": "מחיר (₪)",
+      "required": true,
+      "note": "בהשכרה: לחודש. במכירה: מחיר כולל"
+    },
+    "elevator": {
+      "label": "מעלית",
+      "required": false,
+      "allowed_values": [true, false]
+    },
+    "parking": {
+      "label": "חניה",
+      "required": false
+    },
+    "ravit_impression": {
+      "label": "התרשמות רוית",
+      "required": true,
+      "note": "טקסט חופשי קצר, משפט או שניים: דעה, התרשמות או הבחנה מקצועית של רוית. אסור להמציא"
+    },
+    "verified_surroundings": {
+      "label": "מידע סביבתי מאומת",
+      "required": false,
+      "note": "רק מידע שנבדק מראש; אין מחקר אוטומטי"
+    },
+    "availability": {
+      "label": "זמינות",
+      "required": false,
+      "note": "כשאין מידע, אסור לכתוב שהדירה פנויה מיד"
+    },
+    "additional_details": {
+      "label": "פרטים נוספים",
+      "required": false,
+      "note": "מיזוג, חימום, כיריים, כיור, חימום מים ופרטים מיוחדים"
+    }
+  }
+}

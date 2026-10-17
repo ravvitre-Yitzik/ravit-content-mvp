@@ -1,0 +1,18 @@
+# מפתחות גישה
+.env
+
+# חומרי עבודה פרטיים: כתובת פנימית, מידע עסקי ואישי
+private/
+source-materials/
+approved-spec.pdf
+planning-clarifications.txt
+writing-scope-for-course.txt
+
+# תוצרי הרצות: עשויים לכלול נתוני נכס אמיתיים
+runs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
