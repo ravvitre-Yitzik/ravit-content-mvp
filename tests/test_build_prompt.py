@@ -76,11 +76,23 @@ def test_confirmed_unknown_ends_clarification(template, sample, instructions):
     assert "- מצב הדירה: לא ידוע" in prompt
 
 
-@pytest.mark.parametrize("key", ["deal_type", "price", "ravit_impression"])
+@pytest.mark.parametrize("key", ["deal_type", "price"])
 def test_must_be_known_fields_reject_confirmed_unknown(template, sample, key):
     sample["fields"][key] = {"status": "confirmed_unknown", "value": None}
     requests, problems = check(template, sample)
     assert requests == [] and len(problems) == 1 and "חייב להיות ידוע" in problems[0]
+
+
+def test_impression_must_be_requested(template, sample):
+    sample["fields"].pop("ravit_impression")
+    assert check(template, sample) == (["התרשמות רוית"], [])
+
+
+def test_no_impression_to_give_allows_draft(template, sample, instructions):
+    sample["fields"]["ravit_impression"] = {"status": "confirmed_unknown", "value": None}
+    prompt = prompt_of(template, sample, instructions)
+    assert "- התרשמות רוית: לא ידוע" in prompt
+    assert "אם ״התרשמות רוית״ מסומנת ״לא ידוע״, אל תמציא" in prompt  # guard against invented opinion
 
 
 # --- unknown vs. explicit "no" ---

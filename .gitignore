@@ -11,6 +11,9 @@ writing-scope-for-course.txt
 # תוצרי הרצות: עשויים לכלול נתוני נכס אמיתיים
 runs/
 
+# קובץ תצוגה זמני
+prompt-preview.txt
+
 # Python
 __pycache__/
 *.pyc
