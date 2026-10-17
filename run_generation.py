@@ -1,7 +1,8 @@
 """First generation run: the same fictional sample prompt to Google and Anthropic, one call each, no retries.
 
 Without --run: prints the plan only and calls nothing.
-With --run: calls both providers, checks each answer's structure, computes cost and saves runs/<run_id>.json.
+With --run: calls both providers, checks each answer's structure, computes cost, saves runs/<run_id>.json
+(including a snapshot of the rates used) and rebuilds runs/log.csv.
 Run: python run_generation.py [--run]
 """
 import json
@@ -14,6 +15,7 @@ from build_prompt import ROOT
 from check_common import read_key, sample_prompt
 from cost import CostInputError, call_cost, comparison_total, format_amount
 from parse_response import ResponseError, parse_response
+from run_log import write_log
 
 RATES_PATH = ROOT / "data" / "rates.json"
 RUNS_DIR = ROOT / "runs"
@@ -36,6 +38,7 @@ def evaluate(result, rates):
 
     usage = result["usage"] or {"model_id": result["model"]}
     rate = rates.get(result["model"], {})
+    result["rate"] = dict(rate) if rate else None  # snapshot: later rate changes must not change this record
     try:
         result["cost"] = call_cost(usage, rate)
     except CostInputError as e:
@@ -108,6 +111,7 @@ def main(argv, call_gemini=providers.call_gemini, call_anthropic=providers.call_
 
     run["total_cost"] = comparison_total([r["cost"] for r in run["results"]])
     path = save_run(run)
+    write_log()
     for r in run["results"]:
         print_result(r)
     t = run["total_cost"]

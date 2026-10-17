@@ -112,4 +112,5 @@ def comparison_total(costs):
 
 
 def format_amount(value, currency):
-    return UNAVAILABLE if value is None else f"{value:f} {currency}"
+    # saved runs hold amounts as exact strings, so accept both Decimal and str
+    return UNAVAILABLE if value is None else f"{Decimal(str(value)):f} {currency}"

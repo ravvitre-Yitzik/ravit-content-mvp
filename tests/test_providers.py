@@ -141,6 +141,8 @@ def test_valid_answers_pass_structure_and_cost():
     a = run_generation.evaluate(providers.call_anthropic("p", KEY, FakeAnthropic(anthropic_response())), RATES)
     assert g["parsed"]["hooks"] == ["א", "ב", "ג", "ד", "ה"] and g["structure_errors"] == []
     assert g["cost"]["available"] and g["cost"]["total"] == 0                      # free tier rate
+    assert a["rate"]["input_price"] == "2" and a["rate"]["output_price"] == "10"   # rate snapshot saved with the result
+    assert a["rate"]["unit"] == "per_1m_tokens" and a["rate"]["currency"] == "USD" and a["rate"]["as_of"]
     # 3318 * 2 / 1M + 1500 * 10 / 1M = 0.006636 + 0.015
     assert a["cost"]["available"] and a["cost"]["total"] == Decimal("0.021636")
 
@@ -190,6 +192,7 @@ def test_run_sends_same_prompt_to_both_and_saves(monkeypatch):
     saved = []
     monkeypatch.setattr(run_generation, "read_key", lambda name: KEY)
     monkeypatch.setattr(run_generation, "save_run", lambda run: saved.append(run) or run_generation.RUNS_DIR / "test.json")
+    monkeypatch.setattr(run_generation, "write_log", lambda: None)
     assert run_generation.main(["run_generation.py", "--run"], fake_gemini, fake_anthropic) == 0
     assert prompts == [sample_prompt(), sample_prompt()]
     run = saved[0]

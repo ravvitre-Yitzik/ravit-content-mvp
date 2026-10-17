@@ -75,6 +75,11 @@ def test_unpriced_component_makes_cost_unavailable():
     assert c["input_cost"] == Decimal("0.01")  # known parts are kept, but no call total
 
 
+def test_format_amount_accepts_saved_strings():
+    assert format_amount("0.013804", "USD") == "0.013804 USD"
+    assert format_amount(Decimal("0.022"), "USD") == "0.022 USD"
+
+
 def test_dated_rate_label():
     c = call_cost(USAGE_A, {**RATE_A, "test_rate": None, "as_of": "2026-10-17"})
     assert c["available"] and c["rate_label"] == "תעריף מ־2026-10-17"
