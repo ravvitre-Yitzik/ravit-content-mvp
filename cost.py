@@ -43,7 +43,8 @@ def _tokens(value, name):
 def call_cost(usage, rate):
     """Return input, output and total cost of one call, or the reasons the cost is unavailable.
 
-    usage: {"model_id", "input_tokens", "output_tokens"} as reported by the provider.
+    usage: {"model_id", "input_tokens", "output_tokens", optional "unpriced_components"} as reported by the provider.
+           output_tokens must already include every token billed as output (for example thinking).
     rate:  {"model_id", "currency", "unit", "input_price", "output_price", and "as_of" or "test_rate": true}.
     """
     input_tokens = _tokens(usage.get("input_tokens"), "טוקני קלט")
@@ -72,6 +73,8 @@ def call_cost(usage, rate):
         missing.append("חסר מספר טוקני פלט")
     if output_price is None:
         missing.append("חסר תעריף פלט")
+    for component in usage.get("unpriced_components") or []:  # reported billing the calculator does not price
+        missing.append(f"רכיב חיוב שאינו מחושב: {component}")
 
     input_cost = output_cost = None
     if not rate_problems and input_tokens is not None and input_price is not None:

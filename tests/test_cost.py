@@ -68,6 +68,13 @@ def test_unusable_rate_is_unavailable(change, reason):
     assert c["input_cost"] is None and c["output_cost"] is None
 
 
+def test_unpriced_component_makes_cost_unavailable():
+    c = call_cost({**USAGE_A, "unpriced_components": ["קריאה מהמטמון"]}, RATE_A)
+    assert not c["available"] and c["total"] is None
+    assert c["reasons"] == ["רכיב חיוב שאינו מחושב: קריאה מהמטמון"]
+    assert c["input_cost"] == Decimal("0.01")  # known parts are kept, but no call total
+
+
 def test_dated_rate_label():
     c = call_cost(USAGE_A, {**RATE_A, "test_rate": None, "as_of": "2026-10-17"})
     assert c["available"] and c["rate_label"] == "תעריף מ־2026-10-17"
