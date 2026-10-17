@@ -201,5 +201,20 @@ def test_same_prompt_for_both_providers(template, sample, instructions):
         assert name not in first
 
 
+@pytest.mark.parametrize("rule", [
+    "הפוך יתרונות שנמסרו לחיים שאפשר לדמיין",
+    "מעצם קיומם של גינה, מרפסת, חניה או מחסן אל תסיק בעלות פרטית, הצמדה לדירה או דרך גישה",
+    "אל תסיק ממצב כמו ״שמורה״ שאין צורך בשיפוץ",
+    "אל תהפוך אותה לסיפור על ביקור",
+])
+def test_inference_rules_are_in_the_prompt(template, sample, instructions, rule):
+    # Checks prompt building only: the rule text reaches the providers. It does not test whether a model follows it.
+    assert rule in prompt_of(template, sample, instructions)
+
+
+def test_renovation_example_removed(instructions):
+    assert "להיכנס בלי להתחיל בשיפוץ" not in instructions
+
+
 def test_instructions_sent_without_source_comment(instructions):
     assert instructions.startswith("# הוראות כתיבה")
