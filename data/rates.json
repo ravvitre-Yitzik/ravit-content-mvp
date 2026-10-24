@@ -8,7 +8,8 @@
       "output_price": "10",
       "as_of": "2026-10-17",
       "source": "https://platform.claude.com/docs/en/about-claude/pricing",
-      "note": "Base price, global inference (default). Thinking tokens are billed as output and included in usage.output_tokens. Cache, US-only inference (1.1x) and tools are not priced here."
+      "note": "Base price, global inference (default). Thinking tokens are billed as output and included in usage.output_tokens. Cache, US-only inference (1.1x) and tools are not priced here.",
+      "verified_on": "2026-10-24"
     },
     {
       "model_id": "gemini-3.8-flash",
@@ -18,7 +19,11 @@
       "output_price": "0",
       "as_of": "2026-10-16",
       "source": "https://ai.google.dev/gemini-api/docs/pricing",
-      "note": "Free tier (project without billing): free of charge. Paid tier for reference: 0.75 input / 3.75 output (including thinking) through 2026-12-31, doubling on 2027-01-01. Free tier content may be used to improve Google's products."
+      "note": "Free tier (project without billing): free of charge. Paid tier for reference: 0.75 input / 3.75 output (including thinking) through 2026-12-31, doubling on 2027-01-01. Free tier content may be used to improve Google's products.",
+      "paid_input_price": "0.75",
+      "paid_output_price": "3.75",
+      "paid_prices_valid_until": "2026-12-31",
+      "verified_on": "2026-10-24"
     }
   ]
 }

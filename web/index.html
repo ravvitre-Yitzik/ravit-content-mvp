@@ -10,7 +10,7 @@
 <body>
   <header class="site-header">
     <a class="brand" href="/" aria-label="רווית נכסים — התחלה"><span class="brand-mark" aria-hidden="true">ר</span><span>רווית נכסים<small>מרחב הכתיבה</small></span></a>
-    <span class="demo-badge">מצב הדגמה — ללא פנייה לספקים</span>
+    <span id="mode-badge" class="demo-badge">מצב הדגמה — ללא פנייה לספקים</span>
   </header>
   <main>
     <section class="intro" aria-labelledby="page-title">
@@ -18,6 +18,23 @@
       <h1 id="page-title">שתי טיוטות. הבחירה שלך.</h1>
       <p>מזינים נתוני נכס, משווים שתי חבילות תוכן ובוחרים בסיס להמשך עריכה.</p>
       <p class="publication-note">הבחירה אינה אישור לפרסום. יש לבדוק ידנית את העובדות ואת המידע הפנימי.</p>
+    </section>
+    <section class="mode-panel" aria-labelledby="mode-title">
+      <div class="field"><label for="mode" id="mode-title">איך להפיק את הטיוטות?</label>
+        <select id="mode" disabled><option value="demo">הדגמה · ללא פנייה לספקים</option><option id="live-option" value="live" disabled>חי · פנייה אמיתית לספקים</option></select>
+        <small id="mode-help">הדגמה היא ברירת המחדל.</small>
+      </div>
+      <div id="live-consent" class="live-consent" hidden>
+        <strong>הרצה חיה אחת · הדוגמה הבדיונית בלבד</strong>
+        <p>קריאה אחת ל-Google וקריאה אחת ל-Anthropic, ללא ניסיונות חוזרים. תקרת אומדן מאושרת: $0.50 בסך הכול. זו בדיקה לפני ההרצה, ולא מגבלת חיוב אצל הספקים. נתוני הדוגמה יישלחו לספקים.</p>
+        <label class="checkbox-label"><input id="live-confirmed" type="checkbox"> אני מאשר/ת את ההרצה החיה הזאת, עד $0.50 בסך הכול.</label>
+        <p class="muted">אחרי תחילת הפעולה לא תתאפשר הפעלה נוספת. במקרה של כשל או תוצאה לא ודאית יש לבדוק את ההרצה השמורה.</p>
+        <button id="recover-live" class="button secondary" type="button" disabled>שחזור תוצאת הניסיון הקודם · ללא הפקה נוספת</button>
+        <details class="saved-loader"><summary>פתיחת הרצה חיה שמורה · ללא הפקה נוספת</summary>
+          <div class="saved-loader-row"><div class="field"><label for="saved-run-id">מזהה הרצה שמורה</label><input id="saved-run-id" type="text" dir="ltr" autocomplete="off" maxlength="36" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></div>
+          <button id="load-saved" class="button secondary" type="button">פתיחת הרצה</button></div>
+        </details>
+      </div>
     </section>
     <nav class="steps" aria-label="שלבי ההשוואה">
       <span id="step-input" class="step active"><b>1</b> נתוני הנכס</span>
@@ -36,14 +53,14 @@
           <div id="required-fields" class="field-grid"></div>
           <details class="optional-fields"><summary>פרטים נוספים · שדות רשות</summary><div id="optional-fields" class="field-grid"></div></details>
         </fieldset>
-        <div class="action-row"><div><strong>יצירת תוכן להדגמה בלבד</strong><p class="muted">שתי חבילות מדומות, ללא קריאה לספקים וללא עלות הפקה.</p></div>
+        <div class="action-row"><div><strong id="action-title">יצירת תוכן להדגמה בלבד</strong><p id="action-help" class="muted">שתי חבילות מדומות, ללא קריאה לספקים וללא עלות הפקה.</p></div>
           <button id="compare-button" class="button primary" type="submit" disabled>הפעלת השוואת הדגמה <span aria-hidden="true">←</span></button></div>
       </form>
     </section>
-    <section id="waiting" class="waiting" hidden aria-live="polite"><span class="spinner" aria-hidden="true"></span><div><strong>מכינים את שתי חבילות ההדגמה…</strong><p>אותם נתוני נכס לשתי החבילות. אין פנייה לספקים.</p></div></section>
+    <section id="waiting" class="waiting" hidden aria-live="polite"><span class="spinner" aria-hidden="true"></span><div><strong id="waiting-title">מכינים את שתי חבילות ההדגמה…</strong><p id="waiting-help">אותם נתוני נכס לשתי החבילות. אין פנייה לספקים.</p></div></section>
     <section id="results-section" hidden aria-labelledby="results-title">
-      <div class="section-heading"><div><p class="eyebrow">קוראים, משווים, מחליטים</p><h2 id="results-title" tabindex="-1">שתי נקודות פתיחה לכתיבה</h2></div><span class="demo-badge">תוצרים מדומים</span></div>
-      <p class="muted">אלה תוצרי הדגמה, ולא תשובות אמיתיות של Google או Anthropic. עלות: לא נמדדה — הדגמה.</p>
+      <div class="section-heading"><div><p class="eyebrow">קוראים, משווים, מחליטים</p><h2 id="results-title" tabindex="-1">שתי נקודות פתיחה לכתיבה</h2></div><span id="results-badge" class="demo-badge">תוצרים מדומים</span></div>
+      <p id="results-help" class="muted">אלה תוצרי הדגמה, ולא תשובות אמיתיות של Google או Anthropic. עלות: לא נמדדה — הדגמה.</p><p id="run-reference" class="run-reference" hidden></p><p id="budget-summary" class="budget-summary" hidden></p>
       <div id="packages" class="packages"></div>
       <section class="panel grading-panel" aria-labelledby="grade-title">
         <p class="eyebrow">השיפוט האנושי הוא חלק מהתהליך</p><h2 id="grade-title">איזו חבילה תעזור לך להתקדם?</h2>

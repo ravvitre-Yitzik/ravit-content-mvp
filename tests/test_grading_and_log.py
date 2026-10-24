@@ -159,3 +159,13 @@ def test_grading_files_are_not_read_as_runs(runs):
     path, run = two_ok(runs)
     grading.save_grading(path, run, {"א": 1, "ב": 2}, "אף אחת")
     assert [p.name for p in run_log.run_files(runs)] == ["r1.json"]
+
+
+def test_nested_ui_log_links_to_actual_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_log, "ROOT", tmp_path)
+    nested = tmp_path / "runs" / "ui-live"
+    nested.mkdir(parents=True)
+    path, _ = two_ok(nested)
+    rows = run_log.rows_for_run(path)
+    assert rows[0]["full_output"] == "runs/ui-live/r1.json"
+    assert (tmp_path / rows[0]["full_output"]).is_file()

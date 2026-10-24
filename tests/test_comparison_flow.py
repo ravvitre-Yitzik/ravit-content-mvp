@@ -218,3 +218,206 @@ def test_replay_repairs_log_after_save_failure(tmp_path, prop, monkeypatch):
         rows = list(csv.DictReader(stream))
     assert len(rows) == 2
     assert {row['run_id'] for row in rows} == {recovered['run']['run_id']}
+
+
+@pytest.fixture
+def live_rates():
+    from datetime import date, timedelta
+    from run_generation import load_rates
+    rates = deepcopy(load_rates())
+    for rate in rates.values():
+        rate['verified_on'] = date.today().isoformat()
+    import providers
+    rates[providers.GEMINI_MODEL].update(paid_input_price='0.75', paid_output_price='3.75',
+                                        paid_prices_valid_until=(date.today() + timedelta(days=30)).isoformat())
+    return rates
+
+
+def live_fake(provider, model, calls, *, fail=False):
+    def call(prompt, key):
+        calls.append((provider, prompt))
+        if fail:
+            raise RuntimeError('provider failed with ' + key)
+        return {'provider': provider, 'model': model, 'settings': {}, 'ok': True,
+                'text': answer(provider), 'stop_reason': 'stop', 'truncated': False,
+                'usage_raw': {'reported': True},
+                'usage': {'model_id': model, 'input_tokens': 100, 'output_tokens': 200}, 'error': None}
+    return call
+
+
+def live_service(tmp_path, rates, recorded_calls, **kwargs):
+    import providers
+    from comparison_flow import LiveComparisonService
+    defaults = dict(enabled=True, max_cost_usd='0.50', rates=rates,
+                    calls=[live_fake('Google', providers.GEMINI_MODEL, recorded_calls),
+                           live_fake('Anthropic', providers.ANTHROPIC_MODEL, recorded_calls)],
+                    key_reader=lambda name: 'test-secret-' + name)
+    defaults.update(kwargs)
+    return LiveComparisonService(tmp_path, **defaults)
+
+
+def test_live_explicit_opt_in_sample_and_budget_preflight(tmp_path, prop, live_rates):
+    calls, reads = [], []
+    for options in ({'enabled': False}, {'max_cost_usd': None}, {'max_cost_usd': '0.000001'}, {'max_input_bytes': 1}):
+        service = live_service(tmp_path, live_rates, calls, key_reader=lambda name: reads.append(name), **options)
+        with pytest.raises(ValueError):
+            service.compare(prop, 'one')
+    bad = deepcopy(prop)
+    bad['fields']['rooms']['value'] = 999
+    with pytest.raises(InputValidationError):
+        live_service(tmp_path, live_rates, calls).compare(bad, 'one')
+    assert not calls and not reads and list(tmp_path.iterdir()) == []
+
+
+def test_live_both_keys_before_reserving(tmp_path, prop, live_rates):
+    calls, reads = [], []
+    def key_reader(name):
+        reads.append(name)
+        return 'test-secret' if name == 'GEMINI_API_KEY' else ''
+    with pytest.raises(ValueError):
+        live_service(tmp_path, live_rates, calls, key_reader=key_reader).compare(prop, 'one')
+    assert reads == ['GEMINI_API_KEY', 'ANTHROPIC_API_KEY']
+    assert not calls and list(tmp_path.iterdir()) == []
+
+
+def test_live_success_single_allowance_replay_grade_and_reload(tmp_path, prop, live_rates):
+    from decimal import Decimal
+    calls = []
+    service = live_service(tmp_path, live_rates, calls)
+    first = service.compare(prop, 'one')
+    run = first['run']
+    assert len(calls) == 2 and calls[0][1] == calls[1][1] == run['prompt']
+    assert run['mode'] == 'live'
+    assert Decimal(run['budget_estimate']['estimated_max_total']) < Decimal('0.50')
+    assert run['results'][0]['cost']['available'] is False  # Google tier is unverified.
+    assert run['results'][0]['cost']['total'] is None
+    assert run['results'][0]['rate']['billing_tier'] == 'unknown'
+    assert run['results'][0]['paid_cost_estimate']['available'] is True
+    assert Decimal(run['results'][0]['paid_cost_estimate']['total']) > 0
+    assert run['results'][0]['rate']['paid_input_price'] == '0.75'
+    assert run['results'][1]['usage']['input_tokens'] == 100
+    assert run['results'][1]['cost']['total'] == '0.0022'
+    assert run['total_cost']['available'] is False
+    original = (tmp_path / (run['run_id'] + '.json')).read_bytes()
+    saved = service.grade(run['run_id'], {'א': 3, 'ב': 4}, 'ב')['grading']
+    fresh = live_service(tmp_path, live_rates, calls, key_reader=lambda name: pytest.fail('replay must not read keys'))
+    replay = fresh.compare(prop, 'one')
+    assert replay['already_generated'] and replay['grading'] == saved
+    assert fresh.get_run(run['run_id'])['grading'] == saved
+    with pytest.raises(ValueError):
+        fresh.compare(prop, 'new-request')
+    assert len(calls) == 2
+    assert (tmp_path / (run['run_id'] + '.json')).read_bytes() == original
+    assert len(list((tmp_path / '.requests').glob('*provider-*.json'))) == 2
+    assert b'test-secret-' not in original
+    json.dumps(first)
+
+
+def test_live_partial_provider_failure_still_saves(tmp_path, prop, live_rates):
+    import providers
+    calls = []
+    service = live_service(tmp_path, live_rates, calls,
+        calls=[live_fake('Google', providers.GEMINI_MODEL, calls),
+               live_fake('Anthropic', providers.ANTHROPIC_MODEL, calls, fail=True)])
+    run = service.compare(prop, 'one')['run']
+    assert len(calls) == 2
+    assert run['results'][0]['parsed']
+    assert not run['results'][1]['ok'] and run['results'][1]['error']
+    assert 'test-secret-' not in json.dumps(run)
+    with pytest.raises(ValueError):
+        service.grade(run['run_id'], {'א': 3, 'ב': 3}, 'ב')
+    assert service.grade(run['run_id'], {'א': 3}, 'א')['grading']['scores']['ב'] is None
+
+
+def test_live_uncertain_reservation_never_repeats_and_retains_first(tmp_path, prop, live_rates):
+    import providers
+    from comparison_flow import LiveOutcomeUncertain
+    calls = []
+    def crash(prompt, key):
+        assert (tmp_path / '.requests' / 'single-approved-experiment.json').is_file()
+        calls.append(('crash', prompt))
+        raise KeyboardInterrupt()
+    service = live_service(tmp_path, live_rates, calls,
+        calls=[live_fake('Google', providers.GEMINI_MODEL, calls), crash])
+    with pytest.raises(KeyboardInterrupt):
+        service.compare(prop, 'one')
+    assert len(list((tmp_path / '.requests').glob('*provider-0.json'))) == 1
+    assert list(tmp_path.glob('*.json')) == []
+    fresh = live_service(tmp_path, live_rates, calls)
+    with pytest.raises(LiveOutcomeUncertain):
+        fresh.compare(prop, 'one')
+    with pytest.raises(ValueError):
+        fresh.compare(prop, 'new-id')
+    assert len(calls) == 2
+
+
+def test_live_expired_rates_block_before_keys(tmp_path, prop, live_rates):
+    import providers
+    calls, reads = [], []
+    live_rates[providers.GEMINI_MODEL]['paid_prices_valid_until'] = '2000-01-01'
+    with pytest.raises(ValueError, match='תוקף'):
+        live_service(tmp_path, live_rates, calls, key_reader=lambda name: reads.append(name)).compare(prop, 'one')
+    assert not calls and not reads
+
+
+def test_live_global_slot_atomic_across_instances(tmp_path, prop, live_rates):
+    from comparison_flow import LiveOutcomeUncertain
+    calls = []
+    instances = [live_service(tmp_path, live_rates, calls), live_service(tmp_path, live_rates, calls)]
+    def attempt(index):
+        try:
+            return instances[index].compare(prop, 'same')
+        except LiveOutcomeUncertain:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(attempt, range(2)))
+    assert len(calls) == 2
+    assert any(result is not None for result in results)
+    assert len(list(tmp_path.glob('*.json'))) == 1
+
+
+def test_live_log_failure_replay_repairs_without_calls(tmp_path, prop, live_rates, monkeypatch):
+    import run_log
+    calls = []
+    real_write = run_log.write_log
+    def fail(*args):
+        raise OSError('log failed')
+    monkeypatch.setattr(run_log, 'write_log', fail)
+    with pytest.raises(OSError):
+        live_service(tmp_path, live_rates, calls).compare(prop, 'one')
+    monkeypatch.setattr(run_log, 'write_log', real_write)
+    replay = live_service(tmp_path, live_rates, calls).compare(prop, 'one')
+    assert replay['already_generated'] and (tmp_path / 'log.csv').is_file()
+    assert len(calls) == 2
+
+
+def test_live_request_recovery_saved_without_keys_or_calls(tmp_path, prop, live_rates):
+    from comparison_flow import LiveComparisonService
+    calls = []
+    service = live_service(tmp_path, live_rates, calls)
+    run = service.compare(prop, 'recover-request')['run']
+    saved = service.grade(run['run_id'], {'א': 3, 'ב': 4}, 'ב')['grading']
+    def forbidden(*args):
+        pytest.fail('Read-only recovery must not call a provider or read keys')
+    reader = LiveComparisonService(tmp_path, calls=[forbidden, forbidden], key_reader=forbidden)
+    restored = reader.get_by_request('recover-request')
+    assert restored == {'run': run, 'grading': saved}
+    assert len(calls) == 2
+    with pytest.raises(FileNotFoundError):
+        reader.get_by_request('different-request')
+    with pytest.raises(ValueError):
+        reader.get_by_request('../unsafe')
+
+
+def test_live_request_recovery_uncertain_without_keys_or_calls(tmp_path):
+    from comparison_flow import LiveComparisonService, LiveOutcomeUncertain
+    def forbidden(*args):
+        pytest.fail('Read-only recovery must not call a provider or read keys')
+    reader = LiveComparisonService(tmp_path, calls=[forbidden, forbidden], key_reader=forbidden)
+    with pytest.raises(FileNotFoundError):
+        reader.get_by_request('unknown')
+    atomic_json_create(tmp_path / '.requests' / 'single-approved-experiment.json',
+                       {'request_id': 'reserved', 'run_id': '00000000-0000-0000-0000-000000000000'})
+    with pytest.raises(LiveOutcomeUncertain):
+        reader.get_by_request('reserved')
+    assert list(tmp_path.glob('*.json')) == []

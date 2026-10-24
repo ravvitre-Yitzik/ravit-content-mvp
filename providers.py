@@ -4,6 +4,7 @@ Each call returns a plain dict: the raw answer text, why it stopped, the usage t
 and the usage mapped for cost.py. Clients can be injected so tests run with fake answers only.
 """
 
+REQUEST_TIMEOUT_SECONDS = 120
 MAX_OUTPUT_TOKENS = 4000  # includes thinking tokens on both providers
 GEMINI_MODEL = "gemini-3.8-flash"
 GEMINI_THINKING_LEVEL = "low"  # lowest level documented for this model; thinking cannot be turned off
@@ -56,6 +57,7 @@ def call_gemini(prompt, key, client=None):
     try:
         if client is None:
             client = genai.Client(api_key=key, http_options=types.HttpOptions(
+                timeout=REQUEST_TIMEOUT_SECONDS * 1000,
                 retry_options=types.HttpRetryOptions(attempts=1)))
         response = client.models.generate_content(
             model=GEMINI_MODEL,
@@ -108,7 +110,7 @@ def call_anthropic(prompt, key, client=None):
     result = _result("Anthropic", ANTHROPIC_MODEL, settings)
     try:
         if client is None:
-            client = anthropic.Anthropic(api_key=key, max_retries=0)
+            client = anthropic.Anthropic(api_key=key, max_retries=0, timeout=REQUEST_TIMEOUT_SECONDS)
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
             max_tokens=MAX_OUTPUT_TOKENS,

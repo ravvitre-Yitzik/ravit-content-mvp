@@ -1,11 +1,16 @@
-"""Local, demonstration-only comparison screen. No provider calls or keys at startup."""
+"""Loopback comparison screen. Demo default; live requires explicit server and browser opt-in."""
 import argparse
 import json
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+import re
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 MAX_BODY = 256 * 1024
+LIVE_CAP_USD = "0.50"
+RUN_ID_PATTERN = re.compile(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}")
 
 
 def reject_constant(_value):
@@ -17,8 +22,24 @@ ASSETS = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8")}
 
 
-def create_handler(service):
-    """Bind an injected demo service; all filesystem routes are fixed allowlists."""
+def create_handler(service, *, allow_live=False, live_service=None):
+    """Bind injected services. Live remains disabled unless both gates are present."""
+    live_available = allow_live is True and live_service is not None
+
+    def saved_query(path):
+        parsed = urlsplit(path)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        reference_keys = set(query) - {"mode"}
+        if query.get("mode") != ["live"] or reference_keys not in ({"run_id"}, {"request_id"}):
+            raise ValueError("invalid saved-run reference")
+        key = next(iter(reference_keys))
+        if len(query[key]) != 1:
+            raise ValueError("invalid saved-run reference")
+        value = query[key][0]
+        valid = RUN_ID_PATTERN.fullmatch(value) if key == "run_id" else re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value)
+        if not valid:
+            raise ValueError("invalid saved-run reference")
+        return key, value
     class LocalHandler(BaseHTTPRequestHandler):
         def setup(self):
             super().setup()
@@ -80,12 +101,42 @@ def create_handler(service):
                 if self.path == "/api/schema":
                     template = json.loads((ROOT / "data" / "property-template.json").read_text(encoding="utf-8"))
                     sample = json.loads((ROOT / "data" / "sample-property.json").read_text(encoding="utf-8"))
-                    self._send(200, {"template": template, "sample": sample, "mode": "demo"})
+                    self._send(200, {"template": template, "sample": sample, "mode": "demo",
+                                     "modes": {"demo": {"available": True, "paid": False},
+                                               "live": {"available": live_available, "paid": True,
+                                                        "max_total_usd": LIVE_CAP_USD, "max_total_runs": 1,
+                                                        "max_calls_per_provider": 1, "sample_only": True}}})
+                elif urlsplit(self.path).path == "/api/run":
+                    if not live_available:
+                        self._error(403, "מצב חי אינו פתוח בשרת המקומי.")
+                        return
+                    try:
+                        reference_key, reference = saved_query(self.path)
+                    except ValueError:
+                        self._error(400, "נדרש מזהה תקין של הרצה שמורה במצב חי.")
+                        return
+                    result = live_service.get_run(reference) if reference_key == "run_id" else live_service.get_by_request(reference)
+                    self._send(200, result)
+                elif self.path.startswith("/?"):
+                    try:
+                        saved_query(self.path)
+                    except ValueError:
+                        self._error(404, "העמוד המבוקש לא נמצא.")
+                        return
+                    self._send(200, (ROOT / "web" / "index.html").read_bytes(), "text/html; charset=utf-8")
                 elif self.path in ASSETS:
                     filename, mime = ASSETS[self.path]
                     self._send(200, (ROOT / "web" / filename).read_bytes(), mime)
                 else:
                     self._error(404, "העמוד המבוקש לא נמצא.")
+            except FileNotFoundError:
+                self._error(404, "ההרצה או העמוד המבוקשים לא נמצאו.")
+            except ValueError as exc:
+                if type(exc).__name__ == "LiveOutcomeUncertain":
+                    self._error(409, "הניסיון נשמר אך תוצאתו אינה ודאית. לא תבוצע קריאה נוספת לספקים.",
+                                code="live_outcome_uncertain", retry_allowed=False)
+                else:
+                    self._error(400, "לא ניתן לפתוח את ההרצה המבוקשת.")
             except Exception:
                 self._error(500, "לא ניתן לטעון את המסך. נסו שוב.")
 
@@ -124,14 +175,27 @@ def create_handler(service):
                 return
             if data is None:
                 return
+            mode = data.get("mode", "demo")
+            if mode not in ("demo", "live"):
+                self._error(400, "מצב ההפעלה אינו תקין.")
+                return
+            if mode == "live" and not live_available:
+                self._error(403, "מצב חי אינו פתוח בשרת המקומי.", retry_allowed=False)
+                return
+            selected_service = live_service if mode == "live" else service
             if self.path == "/api/compare":
-                if (set(data) != {"property", "request_id"} or not isinstance(data["property"], dict)
-                        or not isinstance(data["request_id"], str) or not data["request_id"]
+                if mode == "live" and data.get("live_confirmed") is not True:
+                    self._error(403, "יש לאשר במפורש קריאה אחת לכל ספק, בדוגמה הבדיונית בלבד, עד $0.50 בסך הכול.",
+                                retry_allowed=False)
+                    return
+                if (set(data) - {"property", "request_id", "mode", "live_confirmed"}
+                        or not isinstance(data.get("property"), dict)
+                        or not isinstance(data.get("request_id"), str) or not data["request_id"]
                         or len(data["request_id"]) > 100):
                     self._error(400, "נדרשים נתוני נכס ומזהה פעולה תקינים.")
                     return
             else:
-                if (set(data) - {"run_id", "scores", "choice", "note"}
+                if (set(data) - {"run_id", "scores", "choice", "note", "mode"}
                         or not isinstance(data.get("run_id"), str) or not data["run_id"]
                         or len(data["run_id"]) > 100 or not isinstance(data.get("scores"), dict)
                         or not isinstance(data.get("choice"), str) or not isinstance(data.get("note", ""), str)):
@@ -139,9 +203,9 @@ def create_handler(service):
                     return
             try:
                 if self.path == "/api/compare":
-                    result = service.compare(data["property"], data["request_id"])
+                    result = selected_service.compare(data["property"], data["request_id"])
                 else:
-                    result = service.grade(data["run_id"], data["scores"], data["choice"], data.get("note", ""))
+                    result = selected_service.grade(data["run_id"], data["scores"], data["choice"], data.get("note", ""))
                 self._send(200, result)
             except FileNotFoundError:
                 self._error(404, "ההרצה לא נמצאה. הפעילו השוואה ונסו שוב.")
@@ -150,9 +214,18 @@ def create_handler(service):
                     self._error(422, "יש להשלים או לתקן את נתוני הנכס.",
                                 completion_requests=exc.completion_requests, problems=exc.problems)
                 else:
-                    self._error(409, "הפעולה מתנגשת בנתונים שנשמרו או שהדירוג אינו תקין. בדקו את הבחירה והציונים.")
+                    if mode == "live" and self.path == "/api/compare":
+                        self._error(409, "ההרצה החיה חסומה או שמצבה אינו ודאי. אין להפעיל שוב; פתחו את ההרצה השמורה לבדיקה.",
+                                    code="live_outcome_uncertain" if type(exc).__name__ == "LiveOutcomeUncertain" else "live_blocked",
+                                    retry_allowed=False)
+                    else:
+                        self._error(409, "הפעולה מתנגשת בנתונים שנשמרו או שהדירוג אינו תקין. בדקו את הבחירה והציונים.")
             except Exception:
-                self._error(500, "הפעולה לא הושלמה. נסו שוב עם אותם נתונים; לא נשלחה בקשה לספקים.")
+                if mode == "live" and self.path == "/api/compare":
+                    self._error(500, "מצב ההרצה החיה אינו ידוע. אין להפעיל שוב; פתחו את ההרצה השמורה לבדיקה.",
+                                retry_allowed=False)
+                else:
+                    self._error(500, "הפעולה לא הושלמה. נסו שוב עם אותם נתונים.")
 
         def do_HEAD(self):
             self._error(405, "שיטת הבקשה אינה נתמכת.")
@@ -163,21 +236,29 @@ def create_handler(service):
     return LocalHandler
 
 
-def make_server(port=8765, service=None):
+def make_server(port=8765, service=None, *, allow_live=False, live_service=None):
     if service is None:
         from comparison_flow import DemoComparisonService
         service = DemoComparisonService()
-    return HTTPServer(("127.0.0.1", port), create_handler(service))
+    if allow_live is True and live_service is None:
+        from comparison_flow import LiveComparisonService
+        live_service = LiveComparisonService(enabled=True, max_cost_usd=LIVE_CAP_USD, max_total_runs=1)
+    return HTTPServer(("127.0.0.1", port), create_handler(service, allow_live=allow_live, live_service=live_service))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="מסך השוואת טיוטות מקומי — הדגמה בלבד")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser(description="מסך השוואת טיוטות מקומי — הדגמה כברירת מחדל")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--allow-live", action="store_true", help="אפשר אישור מפורש להרצה חיה יחידה, בדוגמה בלבד ועד $0.50")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
-    with make_server(args.port) as server:
-        print(f"מצב הדגמה — ללא פנייה לספקים: http://127.0.0.1:{args.port}")
+    with make_server(args.port, allow_live=args.allow_live) as server:
+        print(f"מסך מקומי — ברירת המחדל הדגמה: http://127.0.0.1:{args.port}")
+        if args.allow_live:
+            print("מצב חי זמין רק לאחר אישור במסך; דוגמה בדיונית בלבד, הרצה יחידה ועד $0.50 בסך הכול.")
         try:
             server.serve_forever()
         except KeyboardInterrupt:

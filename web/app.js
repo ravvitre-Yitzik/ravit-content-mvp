@@ -1,6 +1,6 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {template: null, sample: null, fields: new Map(), requestId: null, run: null, busy: false, saved: false};
+const state = {template: null, sample: null, fields: new Map(), requestId: null, run: null, busy: false, saved: false, mode: "demo", modes: {}, liveAttempted: false, liveRequestId: null};
 const statusLabels = {known: "ערך נמסר", not_provided: "לא נמסר", confirmed_unknown: "ללא נתון — איני יודע/ת", conflicting: "נתונים סותרים — נדרש תיקון"};
 const labels = ["א", "ב"];
 const numericFields = new Set(["floor", "area_sqm", "rooms", "price", "total_floors", "balcony_area_sqm", "garden_area_sqm"]);
@@ -43,6 +43,36 @@ async function api(path, payload) {
   }
   return result;
 }
+function remember(key, value) {
+  try { sessionStorage.setItem(key, value); } catch { /* Backend enforces the one-run allowance independently. */ }
+}
+function recalled(key) {
+  try { return sessionStorage.getItem(key); } catch { return null; }
+}
+function liveMode() { return state.mode === "live"; }
+function refreshCompare() {
+  $("compare-button").disabled = state.busy || !!state.run ||
+    (liveMode() && (!$("live-confirmed").checked || state.liveAttempted));
+}
+function updateModeText() {
+  const live = liveMode();
+  $("mode-badge").textContent = live ? "מצב חי — פנייה אמיתית לספקים" : "מצב הדגמה — ללא פנייה לספקים";
+  $("mode-badge").classList.toggle("live-badge", live);
+  $("live-consent").hidden = !live;
+  $("mode-help").textContent = live ? "הדוגמה הבדיונית בלבד. הנתונים נעולים לעריכה." :
+    state.modes.live?.available ? "הדגמה היא ברירת המחדל. מעבר לחי דורש אישור נוסף." : "הדגמה בלבד. מצב חי אינו פתוח בשרת המקומי.";
+  $("action-title").textContent = live ? "הפקה אמיתית — הדוגמה הבדיונית בלבד" : "יצירת תוכן להדגמה בלבד";
+  $("action-help").textContent = live ? "קריאה אחת לכל ספק. אומדן עד $0.50 בסך הכול; אין ניסיונות חוזרים." :
+    "שתי חבילות מדומות, ללא קריאה לספקים וללא עלות הפקה.";
+  $("waiting-title").textContent = live ? "ממתינים לתשובות הספקים…" : "מכינים את שתי חבילות ההדגמה…";
+  $("waiting-help").textContent = live ? "קריאה אחת לכל ספק, ברצף וללא ניסיון חוזר. אין להפעיל השוואה נוספת." :
+    "אותם נתוני נכס לשתי החבילות. אין פנייה לספקים.";
+  if (!state.run) $("compare-button").textContent = live ? state.liveAttempted ?
+    "ניסיון חי כבר החל · יש לבדוק את ההרצה השמורה" : "הפעלת השוואה חיה · עד $0.50" : "הפעלת השוואת הדגמה ←";
+  $("property-fields").disabled = state.busy || live;
+  $("load-sample").disabled = state.busy || live;
+  refreshCompare();
+}
 function report(error) {
   notice(error instanceof TypeError ? "לא ניתן להתחבר למסך המקומי. ודאו שהשרת פועל ונסו שוב." : error.message,
     error.details || [], true);
@@ -52,9 +82,13 @@ function newId() {
 }
 function setBusy(busy) {
   state.busy = busy;
-  $("property-fields").disabled = busy;
-  $("load-sample").disabled = busy;
-  $("compare-button").disabled = busy || !!state.run;
+  $("property-fields").disabled = busy || liveMode();
+  $("load-sample").disabled = busy || liveMode();
+  $("mode").disabled = busy;
+  $("live-confirmed").disabled = busy || state.liveAttempted;
+  $("load-saved").disabled = busy;
+  $("recover-live").disabled = busy || !state.liveRequestId;
+  refreshCompare();
   $("grading-fields").disabled = busy || state.saved;
   $("save-button").disabled = busy || state.saved;
   document.querySelectorAll(".score-select").forEach((node) => {node.disabled = busy || state.saved;});
@@ -67,8 +101,7 @@ function invalidate() {
   state.saved = false;
   $("results-section").hidden = true;
   $("saved-message").hidden = true;
-  $("compare-button").disabled = false;
-  $("compare-button").textContent = "הפעלת השוואת הדגמה ←";
+  updateModeText();
   $("step-input").classList.add("active");
   $("step-results").classList.remove("active");
   $("step-grade").classList.remove("active");
@@ -162,9 +195,49 @@ function propertyData() {
 function validResult(result) {
   return result.ok && !(result.structure_errors || []).length && result.parsed;
 }
+function measuredCost(cost) {
+  return cost?.available && cost.total !== null && cost.total !== undefined ?
+    String(cost.total) + (cost.currency ? " " + cost.currency : "") : "לא זמינה";
+}
+function resultMetadata(result, live) {
+  if (!live) return "עלות: לא נמדדה — הדגמה · שימוש בטוקנים: לא נמדד";
+  const usage = result.usage || {};
+  const lines = ["עלות מחושבת: " + measuredCost(result.cost),
+    "טוקני קלט: " + (usage.input_tokens ?? "לא זמין") + " · פלט כולל חשיבה: " + (usage.output_tokens ?? "לא זמין")];
+  if (!result.cost?.available && result.cost?.reasons?.length) lines.push(...result.cost.reasons);
+  if (result.paid_cost_estimate) lines.push("אומדן לפי תעריף בתשלום: " +
+    (typeof result.paid_cost_estimate === "object" ? measuredCost(result.paid_cost_estimate) : String(result.paid_cost_estimate)));
+  return lines.join("\n");
+}
 function showRun(run, grading) {
   state.run = run;
   state.saved = false;
+  const live = run.mode === "live";
+  $("results-badge").textContent = live ? "תשובות מספקים" : "תוצרים מדומים";
+  $("results-badge").classList.toggle("live-badge", live);
+  $("results-help").textContent = live ?
+    "תוצאות ההרצה החיה · עלות כוללת מחושבת: " + measuredCost(run.total_cost) +
+    ". הנתונים מבוססים על דיווחי השימוש; אין לראות בהם חשבונית חיוב." :
+    "אלה תוצרי הדגמה, ולא תשובות אמיתיות של Google או Anthropic. עלות: לא נמדדה — הדגמה.";
+  $("run-reference").textContent = "מזהה ההרצה: " + run.run_id;
+  $("run-reference").hidden = false;
+  const budget = run.budget_estimate;
+  $("budget-summary").hidden = !live || !budget;
+  if (live && budget) {
+    const lines = ["אומדן לפני ההרצה — אינו חיוב בפועל",
+      "אומדן מרבי כולל: " + budget.estimated_max_total + " " + (budget.currency || "USD") +
+      " · תקרת אישור: " + budget.approved_max_total + " " + (budget.currency || "USD")];
+    for (const estimate of budget.provider_estimates || []) {
+      lines.push((estimate.model_id || "ספק") + ": " + measuredCost(estimate) + " · אומדן מרבי");
+    }
+    lines.push("העלות המחושבת מדיווחי השימוש מופיעה בנפרד בכל חבילה. האומדן אינו מגבלת חיוב אצל הספקים.");
+    $("budget-summary").textContent = lines.join("\n");
+  }
+  if (live) {
+    state.liveAttempted = true;
+    $("saved-run-id").value = run.run_id;
+    remember("ravit-ui-live-run", run.run_id);
+  }
   $("packages").replaceChildren();
   $("choice").replaceChildren(option("", "בחירת חבילה"));
   $("note").value = "";
@@ -172,14 +245,14 @@ function showRun(run, grading) {
   run.results.forEach((result, index) => {
     const label = labels[index];
     const valid = validResult(result);
-    const card = el("article", "package");
+    const card = el("article", "package" + (live ? " live-output" : ""));
     const head = el("div", "package-header");
     head.append(el("span", "package-letter", label + "׳"));
     const title = el("div");
-    title.append(el("h3", "", "חבילה " + label + "׳"), el("small", "", (result.provider || "ספק") + " · הדגמה מדומה"));
+    title.append(el("h3", "", "חבילה " + label + "׳"), el("small", "package-model", (result.provider || "ספק") + " · " + (live ? result.model || "מודל לא זמין" : "הדגמה מדומה")));
     head.append(title);
     const body = el("div", "package-body");
-    body.append(el("span", "package-status" + (valid ? "" : " failed"), valid ? "מבנה תקין · תוצר הדגמה" :
+    body.append(el("span", "package-status" + (valid ? "" : " failed"), valid ? live ? "מבנה תקין" : "מבנה תקין · תוצר הדגמה" :
       result.ok ? "נדחה בבדיקת המבנה" : "ההפקה נכשלה"));
     if (valid) {
       body.append(el("p", "output-label", "הפוסט"), el("div", "post", result.parsed.post),
@@ -190,10 +263,11 @@ function showRun(run, grading) {
       $("choice").append(option(label, "חבילה " + label + "׳"));
     } else {
       const errors = result.structure_errors || [];
-      body.append(el("p", "", errors.length ? errors.join(" · ") : "לא התקבל תוצר תקין. לא בוצע ניסיון חוזר."));
+      body.append(el("p", "package-error", errors.length ? errors.join(" · ") :
+        result.error || "לא התקבל תוצר תקין. לא בוצע ניסיון חוזר."));
       body.append(el("p", "muted", "החבילה לא תקבל ציון ואינה ניתנת לבחירה."));
     }
-    body.append(el("p", "package-meta", "עלות: לא נמדדה — הדגמה · שימוש בטוקנים: לא נמדד"));
+    body.append(el("p", "package-meta", resultMetadata(result, live)));
     const score = el("div", "field score-field");
     const scoreLabel = el("label", "", "הציון שלי לחבילה " + label + "׳");
     scoreLabel.htmlFor = "score-" + label;
@@ -217,7 +291,8 @@ function showRun(run, grading) {
   $("results-section").hidden = false;
   $("step-results").classList.add("active");
   $("step-grade").classList.add("active");
-  $("compare-button").textContent = "ההשוואה מוכנה · שינוי נתונים יתחיל השוואה חדשה";
+  $("compare-button").textContent = live ? "ההרצה החיה נשמרה · אין הפקה נוספת" : "ההשוואה מוכנה · שינוי נתונים יתחיל השוואה חדשה";
+  $("save-button").hidden = false;
   if (grading) showSaved(grading);
 }
 function restoreScoreLocks() {
@@ -240,23 +315,39 @@ function showSaved(grading) {
 $("property-form").addEventListener("input", () => { if (state.template && !state.busy) invalidate(); });
 $("property-form").addEventListener("change", () => { if (state.template && !state.busy) invalidate(); });
 $("load-sample").addEventListener("click", () => {
-  if (!state.busy) { loadSample(); notice("נטענה דוגמה בדיונית. אפשר לעדכן את הנתונים לפני ההפעלה."); }
+  if (!state.busy && !liveMode()) { loadSample(); notice("נטענה דוגמה בדיונית. אפשר לעדכן את הנתונים לפני ההפעלה."); }
 });
 $("property-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   if (state.busy || state.run || !state.template) return;
+  if (liveMode() && (!$("live-confirmed").checked || state.liveAttempted)) return;
   state.requestId ||= newId();
+  if (liveMode()) {
+    state.liveAttempted = true;
+    state.liveRequestId = state.requestId;
+    remember("ravit-ui-live-attempt", state.requestId);
+  }
   notice();
   setBusy(true);
   $("waiting").hidden = false;
   try {
-    const result = await api("/api/compare", {property: propertyData(), request_id: state.requestId});
+    const payload = {property: liveMode() ? structuredClone(state.sample) : propertyData(),
+      request_id: state.requestId, mode: state.mode};
+    if (liveMode()) payload.live_confirmed = true;
+    const result = await api("/api/compare", payload);
     showRun(result.run, result.grading);
     $("save-button").hidden = state.saved;
     $("results-title").focus();
     $("results-section").scrollIntoView({behavior: "auto", block: "start"});
-    notice("שתי חבילות ההדגמה מוכנות. קראו ובדקו את התוכן לפני הדירוג.");
-  } catch (error) { report(error); }
+    notice(liveMode() ? "ההרצה החיה הסתיימה. בדקו את מצב שתי החבילות לפני הדירוג." :
+      "שתי חבילות ההדגמה מוכנות. קראו ובדקו את התוכן לפני הדירוג.");
+  } catch (error) {
+    if (liveMode()) {
+      notice("ייתכן שהבקשה כבר נשלחה לספקים. אין להפעיל הרצה חדשה; יש לבדוק את ההרצה השמורה.",
+        ["מזהה הפעולה שנשמר: " + state.requestId, error instanceof TypeError ? "החיבור המקומי נותק." : error.message], true);
+      updateModeText();
+    } else report(error);
+  }
   finally { $("waiting").hidden = true; setBusy(false); restoreScoreLocks(); }
 });
 $("grading-form").addEventListener("submit", async (event) => {
@@ -277,21 +368,68 @@ $("grading-form").addEventListener("submit", async (event) => {
   setBusy(true);
   notice();
   try {
-    const result = await api("/api/grade", {run_id: state.run.run_id, scores, choice: $("choice").value, note: $("note").value});
+    const result = await api("/api/grade", {run_id: state.run.run_id, mode: state.run.mode || "demo", scores, choice: $("choice").value, note: $("note").value});
     showSaved(result.grading);
     notice(result.already_saved ? "הדירוג הזה כבר נשמר. לא נוצרה רשומה נוספת." : "הדירוג והבחירה נשמרו בהצלחה.");
   } catch (error) { report(error); }
   finally { setBusy(false); restoreScoreLocks(); }
 });
+$("mode").addEventListener("change", () => {
+  if (state.busy) return;
+  state.mode = $("mode").value === "live" && state.modes.live?.available ? "live" : "demo";
+  $("mode").value = state.mode;
+  $("live-confirmed").checked = false;
+  loadSample();
+  updateModeText();
+  setBusy(false);
+});
+$("live-confirmed").addEventListener("change", refreshCompare);
+async function openSaved(reference, byRequest = false) {
+  if (state.busy || !state.modes.live?.available) return;
+  const valid = byRequest ? /^[A-Za-z0-9_-]{1,100}$/.test(reference) :
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reference);
+  if (!valid) {
+    notice("יש להזין מזהה תקין של הרצה חיה שמורה.", [], true);
+    return;
+  }
+  setBusy(true);
+  notice();
+  try {
+    const data = await api("/api/run?mode=live&" + (byRequest ? "request_id=" : "run_id=") + encodeURIComponent(reference));
+    if (data.run.mode !== "live") throw new Error("ההרצה אינה הרצה חיה.");
+    showRun(data.run, data.grading);
+    notice("ההרצה השמורה נפתחה. לא בוצעה קריאה נוספת לספקים.");
+    $("results-title").focus();
+  } catch (error) { report(error); }
+  finally { setBusy(false); restoreScoreLocks(); }
+}
+$("load-saved").addEventListener("click", () => openSaved($("saved-run-id").value.trim()));
+$("recover-live").addEventListener("click", () => {
+  if (state.liveRequestId) openSaved(state.liveRequestId, true);
+});
 async function init() {
   try {
     const data = await api("/api/schema");
     if (data.mode !== "demo") throw new Error("המסך זמין במצב הדגמה בלבד.");
+    state.modes = data.modes || {};
+    state.liveRequestId = recalled("ravit-ui-live-attempt");
+    state.liveAttempted = !!state.liveRequestId;
+    $("live-option").disabled = !state.modes.live?.available;
+    $("saved-run-id").value = recalled("ravit-ui-live-run") || "";
     state.template = data.template;
     state.sample = data.sample;
     buildFields(data.template);
     loadSample();
     setBusy(false);
+    updateModeText();
+    const query = new URLSearchParams(location.search);
+    if (query.get("mode") === "live" && (query.has("run_id") || query.has("request_id"))) {
+      if (!state.modes.live?.available) throw new Error("מצב חי אינו פתוח בשרת המקומי.");
+      state.mode = "live";
+      $("mode").value = "live";
+      updateModeText();
+      await openSaved(query.get("run_id") || query.get("request_id"), !query.has("run_id"));
+    }
   } catch (error) { report(error); }
 }
 init();

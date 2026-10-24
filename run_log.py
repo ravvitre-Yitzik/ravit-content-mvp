@@ -47,6 +47,13 @@ def grading_path(run_path):
     return run_path.with_name(run_path.stem + ".grading.json")
 
 
+def _output_link(run_path):
+    try:
+        return run_path.resolve().relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return f"runs/{run_path.name}"
+
+
 def rows_for_run(run_path):
     run = json.loads(run_path.read_text(encoding="utf-8"))
     gpath = grading_path(run_path)
@@ -79,7 +86,7 @@ def rows_for_run(run_path):
             "choice": _value(grading.get("choice")),
             "note": _safe_text(grading.get("note")),
             "prompt_sha256": hashlib.sha256(run.get("prompt", "").encode("utf-8")).hexdigest()[:16],
-            "full_output": f"runs/{run_path.name}",
+            "full_output": _output_link(run_path),
         })
     return rows
 
