@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>רווית נכסים · השוואת טיוטות</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="רווית נכסים — התחלה"><span class="brand-mark" aria-hidden="true">ר</span><span>רווית נכסים<small>מרחב הכתיבה</small></span></a>
+    <span class="demo-badge">מצב הדגמה — ללא פנייה לספקים</span>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <p class="eyebrow">מפרטי הנכס לטיוטה הראשונה</p>
+      <h1 id="page-title">שתי טיוטות. הבחירה שלך.</h1>
+      <p>מזינים נתוני נכס, משווים שתי חבילות תוכן ובוחרים בסיס להמשך עריכה.</p>
+      <p class="publication-note">הבחירה אינה אישור לפרסום. יש לבדוק ידנית את העובדות ואת המידע הפנימי.</p>
+    </section>
+    <nav class="steps" aria-label="שלבי ההשוואה">
+      <span id="step-input" class="step active"><b>1</b> נתוני הנכס</span>
+      <span id="step-results" class="step"><b>2</b> השוואת טיוטות</span>
+      <span id="step-grade" class="step"><b>3</b> דירוג ושמירה</span>
+    </nav>
+    <div id="notice" class="notice" role="status" aria-live="polite" tabindex="-1"></div>
+    <section class="panel" aria-labelledby="input-title">
+      <div class="panel-heading"><div><p class="eyebrow">מתחילים כאן</p><h2 id="input-title">מה חשוב לדעת על הנכס?</h2></div>
+        <button id="load-sample" class="button secondary" type="button" disabled>טעינת דוגמה בדיונית</button></div>
+      <p class="muted">הנתונים שנטענו בתחילה הם דוגמה בדיונית. בהדגמה הזאת השתמשו בנתונים בדיוניים בלבד.</p>
+      <p class="field-legend">״לא נמסר״ — חסר מידע · ״ללא נתון״ — אישרת שאינך יודע/ת · ״לא״ — שלילה מפורשת.</p>
+      <form id="property-form" novalidate>
+        <fieldset id="property-fields" disabled>
+          <legend class="sr-only">נתוני הנכס</legend>
+          <div id="required-fields" class="field-grid"></div>
+          <details class="optional-fields"><summary>פרטים נוספים · שדות רשות</summary><div id="optional-fields" class="field-grid"></div></details>
+        </fieldset>
+        <div class="action-row"><div><strong>יצירת תוכן להדגמה בלבד</strong><p class="muted">שתי חבילות מדומות, ללא קריאה לספקים וללא עלות הפקה.</p></div>
+          <button id="compare-button" class="button primary" type="submit" disabled>הפעלת השוואת הדגמה <span aria-hidden="true">←</span></button></div>
+      </form>
+    </section>
+    <section id="waiting" class="waiting" hidden aria-live="polite"><span class="spinner" aria-hidden="true"></span><div><strong>מכינים את שתי חבילות ההדגמה…</strong><p>אותם נתוני נכס לשתי החבילות. אין פנייה לספקים.</p></div></section>
+    <section id="results-section" hidden aria-labelledby="results-title">
+      <div class="section-heading"><div><p class="eyebrow">קוראים, משווים, מחליטים</p><h2 id="results-title" tabindex="-1">שתי נקודות פתיחה לכתיבה</h2></div><span class="demo-badge">תוצרים מדומים</span></div>
+      <p class="muted">אלה תוצרי הדגמה, ולא תשובות אמיתיות של Google או Anthropic. עלות: לא נמדדה — הדגמה.</p>
+      <div id="packages" class="packages"></div>
+      <section class="panel grading-panel" aria-labelledby="grade-title">
+        <p class="eyebrow">השיפוט האנושי הוא חלק מהתהליך</p><h2 id="grade-title">איזו חבילה תעזור לך להתקדם?</h2>
+        <p class="grading-rule">טעות עובדתית מהותית או חשיפת מידע פנימי מונעות ציון 4 או 5.</p>
+        <details class="scale"><summary>מה משמעות הציונים?</summary><ol reversed><li value="5">מוכן לפרסום ללא שינוי</li><li value="4">מתאים לאחר תיקונים נקודתיים קלים</li><li value="3">הכיוון מתאים, אך דרוש ליטוש משמעותי</li><li value="2">נדרשת כתיבה מחדש של חלקים מרכזיים</li><li value="1">אינו שימושי או כולל שגיאות מהותיות</li></ol><p>הציון מתאר את הערכתך בלבד; הבחירה אינה אישור לפרסום.</p></details>
+        <form id="grading-form">
+          <fieldset id="grading-fields"><legend class="sr-only">בחירה והערכה</legend>
+            <div class="grade-grid"><div class="field"><label for="choice">הבחירה שלי <span class="required-tag">חובה</span></label><select id="choice" required><option value="">בחירת חבילה</option></select></div>
+            <div class="field"><label for="note">הערה קצרה <span class="muted">רשות</span></label><textarea id="note" rows="3" maxlength="10000" placeholder="מה עבד טוב, ומה דורש תיקון?"></textarea></div></div>
+          </fieldset>
+          <div class="action-row"><p class="publication-note">הבחירה אינה אישור לפרסום.</p><button id="save-button" class="button primary" type="submit">שמירת הדירוג והבחירה</button></div>
+        </form>
+        <div id="saved-message" class="saved-message" role="status" hidden></div>
+      </section>
+    </section>
+  </main>
+  <footer>רווית נכסים · מקום לטיוטות, עם שיקול דעת אנושי.</footer>
+</body>
+</html>

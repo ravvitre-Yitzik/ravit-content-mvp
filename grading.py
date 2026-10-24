@@ -67,7 +67,8 @@ def save_grading(run_path, run, scores, choice, note=None):
         "publication_approval": False,
         "scale_source": "approved-spec.pdf, עמוד 2",
     }
-    gpath.write_text(json.dumps(grading, ensure_ascii=False, indent=2), encoding="utf-8")
+    from comparison_flow import atomic_json_create
+    atomic_json_create(gpath, grading)
     return gpath
 
 
