@@ -91,6 +91,7 @@ def test_gemini_client_built_without_retries(monkeypatch):
     monkeypatch.setattr("google.genai.Client", fake_client)
     providers.call_gemini("בקשה", KEY)
     assert built["api_key"] == KEY and built["http_options"].retry_options.attempts == 1
+    assert built["http_options"].timeout == 120000
 
 
 # --- Anthropic ---
@@ -128,7 +129,7 @@ def test_anthropic_client_built_without_retries(monkeypatch):
 
     monkeypatch.setattr("anthropic.Anthropic", fake_client)
     providers.call_anthropic("בקשה", KEY)
-    assert built == {"api_key": KEY, "max_retries": 0}
+    assert built == {"api_key": KEY, "max_retries": 0, "timeout": 120}
 
 
 # --- structure check and cost ---
