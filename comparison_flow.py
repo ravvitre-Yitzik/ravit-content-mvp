@@ -382,3 +382,277 @@ class LiveComparisonService(DemoComparisonService):
             atomic_json_create(self.runs_dir / f'{run_id}.json', run)
             run_log.write_log(self.runs_dir)
             return {'run': run, 'grading': None, 'already_generated': False}
+
+
+class OperationalComparisonService(LiveComparisonService):
+    """Editable local workflow: explicit consent and a separate durable intent per request."""
+    MODE = 'work'
+    MAX_PROPERTY_BYTES = 256 * 1024
+    MAX_FIELD_CHARS = 10000
+    NUMERIC_FIELDS = {'floor', 'area_sqm', 'rooms', 'price', 'total_floors', 'balcony_area_sqm', 'garden_area_sqm'}
+
+    def __init__(self, runs_dir=None, *, enabled=False, max_cost_usd=None,
+                 max_input_bytes=65536, calls=None, key_reader=None, rates=None):
+        super().__init__(Path(runs_dir) if runs_dir is not None else build_prompt.ROOT / 'runs' / 'work',
+                         enabled=enabled, max_cost_usd=max_cost_usd, max_input_bytes=max_input_bytes,
+                         calls=calls, key_reader=key_reader, rates=rates)
+
+    @staticmethod
+    def _request_id(request_id):
+        if not isinstance(request_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', request_id):
+            raise ValueError('מזהה בקשה לא תקין')
+        return request_id
+
+    def _intent_path(self, request_id):
+        self._request_id(request_id)
+        digest = hashlib.sha256(request_id.encode('ascii')).hexdigest()
+        return self.runs_dir / '.requests' / f'{digest}.json'
+
+    def _validated_property(self, property_data):
+        import math
+        try:
+            encoded = json.dumps(property_data, ensure_ascii=False, allow_nan=False)
+            if len(encoded.encode('utf-8')) > self.MAX_PROPERTY_BYTES:
+                raise ValueError()
+            prop = json.loads(encoded)
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            raise InputValidationError([], ['קלט הנכס אינו תקין או גדול מדי']) from None
+        if not isinstance(prop, dict) or set(prop) - {'fields', 'example_id', 'data_note', 'sources'} or not isinstance(prop.get('fields'), dict):
+            raise InputValidationError([], ['נדרש אובייקט נתוני נכס עם שדות מוכרים בלבד'])
+        template = build_prompt.load_json(build_prompt.TEMPLATE_PATH)
+        if set(prop['fields']) - set(template['fields']):
+            raise InputValidationError([], ['נמצאו שדות שאינם בתבנית'])
+        normalized, problems = {'fields': {}}, []
+        for key, spec in template['fields'].items():
+            field = build_prompt.get_field(prop, key)
+            label = spec['label']
+            if not isinstance(field, dict) or set(field) - {'status', 'value', 'source'}:
+                problems.append(f'{label}: מבנה שדה לא תקין')
+                continue
+            status, value = field.get('status'), field.get('value')
+            if not isinstance(status, str) or status not in build_prompt.STATUSES:
+                problems.append(f'{label}: מצב מידע לא תקין')
+                continue
+            if status != 'known':
+                value = None  # Inactive form contents must never enter the prompt or saved property.
+            elif 'allowed_values' in spec:
+                if not any(type(value) is type(allowed) and value == allowed for allowed in spec['allowed_values']):
+                    problems.append(f'{label}: ערך לא מותר')
+            elif key in self.NUMERIC_FIELDS:
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or (isinstance(value, float) and not math.isfinite(value)):
+                    problems.append(f'{label}: נדרש מספר סופי')
+                elif key in {'price', 'rooms', 'area_sqm'} and value <= 0:
+                    problems.append(f'{label}: נדרש מספר חיובי')
+                elif key in {'total_floors', 'balcony_area_sqm', 'garden_area_sqm'} and value < 0:
+                    problems.append(f'{label}: נדרש מספר שאינו שלילי')
+                elif key in {'floor', 'total_floors'} and value != int(value):
+                    problems.append(f'{label}: נדרש מספר שלם')
+            elif spec.get('multiple'):
+                if (not isinstance(value, list) or len(value) > 64
+                        or any(not isinstance(item, str) or not item.strip() or len(item) > 1000 for item in value)):
+                    problems.append(f'{label}: נדרשת רשימה מוגבלת של ערכי טקסט')
+            elif not isinstance(value, str) or len(value) > self.MAX_FIELD_CHARS:
+                problems.append(f'{label}: נדרש טקסט באורך מותר')
+            normalized['fields'][key] = {'status': status, 'value': value}
+        if problems:
+            raise InputValidationError([], problems)
+        requests, problems = build_prompt.check(template, normalized)
+        if requests or problems:
+            raise InputValidationError(requests, problems)
+        return normalized, template
+
+    def preview(self, property_data):
+        """Server-validated review before consent; no keys, reservation or provider calls."""
+        self._require_enabled()
+        from run_generation import load_rates
+        prop, template = self._validated_property(property_data)
+        prompt = build_prompt.build_prompt(template, prop, build_prompt.load_instructions())
+        if len(prompt.encode('utf-8')) > self._input_limit:
+            raise InputValidationError([], ['הבקשה חורגת ממגבלת הקלט המקומית'])
+        rates = json.loads(json.dumps(self._rates if self._rates is not None else load_rates(), default=str))
+        return {'property': prop, 'budget_estimate': self._budget(prompt, rates)}
+
+    def _write_log(self):
+        return run_log.write_log(self.runs_dir)
+
+    def _read_intent(self, request_id):
+        path = self._intent_path(request_id)
+        if not path.is_file():
+            raise FileNotFoundError('לא נמצאה בקשת עבודה שמורה')
+        try:
+            intent = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(intent, dict) or intent.get('request_id') != request_id or intent.get('mode') != self.MODE:
+                raise ValueError()
+        except (ValueError, OSError):
+            raise LiveOutcomeUncertain('מצב הבקשה אינו ודאי; לא תבוצע קריאה נוספת') from None
+        return intent
+
+    def get_by_request(self, request_id):
+        with self._lock:
+            intent = self._read_intent(request_id)
+            try:
+                return self.get_run(intent.get('run_id'))
+            except (ValueError, FileNotFoundError):
+                raise LiveOutcomeUncertain('תוצאת הבקשה אינה ודאית; לא תבוצע קריאה נוספת') from None
+
+    def get_run(self, run_id):
+        with self._lock:
+            if not isinstance(run_id, str) or not re.fullmatch(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', run_id):
+                raise ValueError('מזהה הרצה לא תקין')
+            path = self.runs_dir / f'{run_id}.json'
+            if not path.is_file():
+                raise FileNotFoundError('לא נמצאה הרצת עבודה שמורה')
+            run = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(run, dict) or run.get('mode') != self.MODE or run.get('run_id') != run_id:
+                raise ValueError('מצב ההרצה אינו תואם לשירות')
+            gpath = run_log.grading_path(path)
+            saved = json.loads(gpath.read_text(encoding='utf-8')) if gpath.exists() else None
+            return {'run': run, 'grading': saved}
+
+    def list_runs(self):
+        with self._lock:
+            rows, completed = [], set()
+            for path in run_log.run_files(self.runs_dir):
+                try:
+                    record = self.get_run(path.stem)
+                    run, saved = record['run'], record['grading']
+                    valid = sum(run_log.package_status(result) == 'תקין' for result in run['results'])
+                    rows.append({'run_id': run['run_id'], 'request_id': run['request_id'], 'date': run['date'],
+                                 'status': 'completed' if valid == 2 else 'partial_failure' if valid else 'failed',
+                                 'graded': saved is not None, 'choice': saved.get('choice') if saved else None,
+                                 'total_cost': {k: (run.get('total_cost') or {}).get(k) for k in ('available', 'currency', 'total')}})
+                    completed.add(run['run_id'])
+                except (ValueError, KeyError, TypeError, OSError):
+                    continue  # A corrupt record must not hide other history entries.
+            for path in (self.runs_dir / '.requests').glob('*.json'):
+                if not re.fullmatch(r'[a-f0-9]{64}', path.stem):
+                    continue  # Provider checkpoints are private; not history records.
+                try:
+                    intent = json.loads(path.read_text(encoding='utf-8'))
+                    if intent.get('mode') != self.MODE or intent.get('run_id') in completed:
+                        continue
+                    self._request_id(intent.get('request_id'))
+                    if self._intent_path(intent['request_id']).name != path.name:
+                        continue
+                    rows.append({'run_id': intent.get('run_id'), 'request_id': intent['request_id'],
+                                 'date': intent.get('reserved_at'), 'status': 'uncertain',
+                                 'graded': False, 'choice': None, 'total_cost': None})
+                except (ValueError, AttributeError, KeyError, TypeError, OSError):
+                    continue
+            return {'runs': sorted(rows, key=lambda row: str(row.get('date') or ''), reverse=True)}
+
+    def _provider_result(self, index, prompt, keys, rates):
+        import providers
+        from run_generation import evaluate
+        provider, model = (('Google', providers.GEMINI_MODEL), ('Anthropic', providers.ANTHROPIC_MODEL))[index]
+        def redact(value):
+            if isinstance(value, str):
+                for key in keys:
+                    value = value.replace(key, '***')
+                return value
+            if isinstance(value, list):
+                return [redact(item) for item in value]
+            if isinstance(value, dict):
+                return {redact(key): redact(item) for key, item in value.items()}
+            return value
+        def failed():
+            return {'provider': provider, 'model': model, 'settings': {}, 'ok': False, 'text': None,
+                    'stop_reason': None, 'truncated': False, 'usage': None, 'usage_raw': None,
+                    'error': 'קריאת הספק נכשלה; לא בוצע ניסיון חוזר'}
+        try:
+            result = json.loads(json.dumps(self._live_calls[index](prompt, keys[index]), default=str, allow_nan=False))
+            result = redact(result)
+            if not isinstance(result, dict) or result.get('provider') != provider or result.get('model') != model:
+                raise ValueError()
+            result = evaluate(result, rates)
+        except Exception:
+            result = evaluate(failed(), rates)
+        if provider == 'Google':
+            tier = rates[model].get('billing_tier')
+            paid_rates = {**rates, model: {**rates[model], 'input_price': rates[model]['paid_input_price'],
+                                          'output_price': rates[model]['paid_output_price']}}
+            if tier == 'paid':
+                result = evaluate(result, paid_rates)
+            elif tier != 'free':
+                result['paid_cost_estimate'] = evaluate(dict(result), paid_rates)['cost']
+                result['rate']['billing_tier'] = 'unknown'
+                result['rate']['input_price'] = None
+                result['rate']['output_price'] = None
+                result['cost'] = {'available': False, 'model_id': model, 'currency': 'USD',
+                                  'input_cost': None, 'output_cost': None, 'total': None,
+                                  'reasons': ['מסלול החיוב של Google לא אומת; האומדן בתשלום מוצג בנפרד']}
+        return json.loads(json.dumps(result, ensure_ascii=False, default=str, allow_nan=False))
+
+    def compare(self, property_data, request_id, *, data_consent=False):
+        self._require_enabled()
+        self._request_id(request_id)
+        if data_consent is not True:
+            raise ValueError('נדרשת הסכמה מפורשת לשליחת כל נתוני הנכס לשני הספקים')
+        with self._lock:
+            from run_generation import load_rates
+            from cost import comparison_total
+            prop, template = self._validated_property(property_data)
+            fingerprint = hashlib.sha256(json.dumps(prop, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+            slot = self._intent_path(request_id)
+            if slot.exists():
+                intent = self._read_intent(request_id)
+                if intent.get('input_sha256') != fingerprint:
+                    raise ValueError('מזהה הבקשה כבר שימש לקלט אחר')
+                restored = self.get_by_request(request_id)
+                self._write_log()
+                return {**restored, 'already_generated': True}
+            prompt = build_prompt.build_prompt(template, prop, build_prompt.load_instructions())
+            if len(prompt.encode('utf-8')) > self._input_limit:
+                raise InputValidationError([], ['הבקשה חורגת ממגבלת הקלט המקומית'])
+            rates = json.loads(json.dumps(self._rates if self._rates is not None else load_rates(), default=str))
+            budget = self._budget(prompt, rates)
+            try:
+                keys = [self._key_reader(name) for name in ('GEMINI_API_KEY', 'ANTHROPIC_API_KEY')]
+            except Exception:
+                raise ValueError('לא ניתן לקרוא את שני המפתחות; לא בוצעה קריאה לספקים') from None
+            if any(not isinstance(key, str) or not key.strip() for key in keys):
+                raise ValueError('חסרים מפתחות לשני הספקים; לא בוצעה קריאה לספקים')
+            run_id = str(uuid4())
+            intent = {'run_id': run_id, 'request_id': request_id, 'input_sha256': fingerprint,
+                      'reserved_at': datetime.now(timezone.utc).isoformat(), 'mode': self.MODE,
+                      'budget_estimate': budget, 'data_consent': True}
+            try:
+                atomic_json_create(slot, intent)
+            except FileExistsError:
+                raise LiveOutcomeUncertain('הבקשה כבר התחילה; לא תבוצע קריאה נוספת') from None
+            run = {'run_id': run_id, 'request_id': request_id, 'date': intent['reserved_at'], 'mode': self.MODE,
+                   'property': prop, 'input_sha256': fingerprint, 'prompt': prompt, 'results': [],
+                   'budget_estimate': budget, 'data_consent': True}
+            for index in range(2):
+                result = self._provider_result(index, prompt, keys, rates)
+                atomic_json_create(slot.parent / f'{run_id}-provider-{index}.json', result)
+                run['results'].append(result)
+            run['total_cost'] = comparison_total([result['cost'] for result in run['results']])
+            run = json.loads(json.dumps(run, ensure_ascii=False, default=str, allow_nan=False))
+            atomic_json_create(self.runs_dir / f'{run_id}.json', run)
+            self._write_log()
+            return {'run': run, 'grading': None, 'already_generated': False}
+
+    def grade(self, run_id, scores, choice, note=''):
+        with self._lock:
+            if (not isinstance(scores, dict) or set(scores) - set(run_log.LABELS)
+                    or not isinstance(choice, str) or not isinstance(note, str) or len(note) > self.MAX_FIELD_CHARS):
+                raise ValueError('נתוני דירוג לא תקינים')
+            record = self.get_run(run_id)
+            run, saved = record['run'], record['grading']
+            errors = grading.check_grading(run, scores, choice)
+            if errors:
+                raise ValueError('; '.join(errors))
+            wanted = {label: scores.get(label) for label in run_log.LABELS}
+            already_saved = saved is not None
+            if saved is None:
+                path = self.runs_dir / f'{run_id}.json'
+                try:
+                    grading.save_grading(path, run, scores, choice, note)
+                except FileExistsError:
+                    already_saved = True  # Another process atomically published a grading.
+                saved = self.get_run(run_id)['grading']
+            if saved is None or (saved['scores'], saved['choice'], saved['note']) != (wanted, choice, note or None):
+                raise ValueError('הדירוג כבר נשמר ואינו ניתן לשינוי')
+            self._write_log()
+            return {'run_id': run_id, 'grading': saved, 'already_saved': already_saved}

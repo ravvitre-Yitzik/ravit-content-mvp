@@ -32,8 +32,9 @@ class FakeService:
 
 
 def request(service, method="GET", path="/", payload=None, *, body=None, headers=None, remove=(),
-            allow_live=False, live_service=None):
-    handler_type = local_ui.create_handler(service, allow_live=allow_live, live_service=live_service)
+            allow_live=False, live_service=None, allow_work=False, work_service=None):
+    handler_type = local_ui.create_handler(service, allow_live=allow_live, live_service=live_service,
+                                            allow_work=allow_work, work_service=work_service)
     handler = handler_type.__new__(handler_type)
     handler.server = SimpleNamespace(server_address=("127.0.0.1", 8765))
     handler.request_version = "HTTP/1.1"
@@ -358,8 +359,8 @@ def test_live_controls_are_explicit_and_no_mode_switch_autogenerates():
     html = (local_ui.ROOT / "web" / "index.html").read_text(encoding="utf-8")
     assert 'id="live-confirmed" type="checkbox"' in html
     assert 'id="live-option" value="live" disabled' in html
-    assert "structuredClone(state.sample)" in source
-    assert 'remember("ravit-ui-live-attempt", state.requestId)' in source
+    assert "structuredClone(state.reviewProperty)" in source
+    assert 'remember("ravit-ui-work-attempt",state.requestId)' in source
     assert "resultMetadata(result, live)" in source and "result.model" in source
     assert 'state.run.mode || "demo"' in source
 
@@ -402,7 +403,7 @@ def test_preflight_estimate_and_reported_cost_have_separate_ui_locations():
     assert 'id="budget-summary"' in html and 'id="recover-live"' in html
     assert "budget.estimated_max_total" in source and "budget.approved_max_total" in source
     assert "budget.provider_estimates" in source and "result.paid_cost_estimate" in source
-    assert 'openSaved(state.liveRequestId, true)' in source
+    assert 'openSaved(state.liveRequestId,true,"live")' in source
 
 
 def test_startup_writes_hebrew_to_redirected_windows_output_without_calls(monkeypatch):
@@ -419,4 +420,155 @@ def test_startup_writes_hebrew_to_redirected_windows_output_without_calls(monkey
     redirected.flush()
     assert redirected.encoding == "utf-8"
     assert "ברירת המחדל הדגמה" in output.getvalue().decode("utf-8")
-    assert constructed == [(8765, {"allow_live": False})]
+    assert constructed == [(8765, {"allow_live": False, "allow_work": False})]
+
+
+class FakeWorkService(FakeLiveService):
+    def preview(self, prop):
+        self.calls.append(("preview", prop))
+        if self.error:
+            raise self.error
+        return {"property": prop, "budget_estimate": {"estimated_max_total": "0.09", "approved_max_total": "0.50", "currency": "USD"}}
+
+    def compare(self, prop, request_id, *, data_consent=False):
+        assert data_consent is True
+        result = super().compare(prop, request_id)
+        result["run"]["mode"] = "work"
+        return result
+
+    def get_run(self, run_id):
+        result = super().get_run(run_id)
+        result["run"]["mode"] = "work"
+        return result
+
+    def get_by_request(self, request_id):
+        result = super().get_by_request(request_id)
+        result["run"]["mode"] = "work"
+        return result
+
+    def list_runs(self):
+        self.calls.append(("list_runs",))
+        if self.error:
+            raise self.error
+        return {"runs": [{"run_id": RUN_ID, "request_id": "work-one", "date": "2026-10-24T10:00:00",
+                           "status": "completed", "graded": False, "choice": None, "total_cost": None}]}
+
+
+WORK = {**COMPARE, "mode": "work", "work_consent": True}
+
+
+def test_work_schema_discloses_per_comparison_cap_and_google_privacy_without_starting_work():
+    work = FakeWorkService()
+    status, _, body = request(FakeService(), path="/api/schema", allow_work=True, work_service=work)
+    data = json.loads(body)
+    assert status == 200 and data["mode"] == "demo"
+    metadata = data["modes"]["work"]
+    assert metadata["available"] is True and metadata["max_total_usd"] == "0.50"
+    assert metadata["limit_scope"] == "per_comparison" and metadata["sample_only"] is False
+    assert metadata["google_billing_tier"] == "unknown"
+    assert "מספר הבניין" in metadata["privacy_notice"] and "שיפור מוצריה" in metadata["privacy_notice"]
+    assert work.calls == []
+
+
+@pytest.mark.parametrize("allow,present", [(False, False), (False, True), (True, False)])
+def test_work_post_preview_and_history_all_require_server_gate(allow, present):
+    work = FakeWorkService()
+    kwargs = {"allow_work": allow, "work_service": work if present else None}
+    assert request(FakeService(), "POST", "/api/compare", WORK, **kwargs)[0] == 403
+    assert request(FakeService(), "POST", "/api/preview", {"mode":"work","property":{}}, **kwargs)[0] == 403
+    assert request(FakeService(), path="/api/history?mode=work", **kwargs)[0] == 403
+    assert work.calls == []
+
+
+@pytest.mark.parametrize("confirmation", [None, False, 1, "true", [], {}])
+def test_work_requires_literal_consent_before_any_provider_service_call(confirmation):
+    work = FakeWorkService()
+    assert request(FakeService(), "POST", "/api/compare", {**WORK, "work_consent": confirmation},
+                   allow_work=True, work_service=work)[0] == 403
+    assert work.calls == []
+
+
+def test_work_compare_preview_grade_and_read_routes_dispatch_only_to_work():
+    demo, legacy, work = FakeService(), FakeLiveService(), FakeWorkService()
+    kwargs = {"allow_work":True,"work_service":work,"live_service":legacy}
+    assert request(demo, "POST", "/api/preview", {"mode":"work","property":COMPARE["property"]}, **kwargs)[0] == 200
+    assert work.calls == [("preview",COMPARE["property"])]
+    assert request(demo, "POST", "/api/compare", WORK, **kwargs)[0] == 200
+    assert work.calls[-1] == ("compare",COMPARE["property"],COMPARE["request_id"])
+    assert request(demo, "POST", "/api/grade", {**GRADE,"mode":"work"}, **kwargs)[0] == 200
+    assert work.calls[-1][0] == "grade"
+    assert request(demo, path="/api/run?mode=work&run_id="+RUN_ID, **kwargs)[0] == 200
+    assert work.calls[-1] == ("get_run",RUN_ID)
+    assert request(demo, path="/api/run?mode=work&request_id=work-one", **kwargs)[0] == 200
+    assert work.calls[-1] == ("get_by_request","work-one")
+    assert request(demo, path="/api/history?mode=work", **kwargs)[0] == 200
+    assert work.calls[-1] == ("list_runs",)
+    assert demo.calls == legacy.calls == []
+
+
+@pytest.mark.parametrize("payload", [
+    {"mode":"demo","property":{}}, {"mode":"live","property":{}},
+    {"mode":"work"}, {"mode":"work","property":[]},
+    {"mode":"work","property":{},"work_consent":True},
+])
+def test_preview_rejects_extra_fields_and_other_modes_without_generation(payload):
+    work = FakeWorkService()
+    assert request(FakeService(),"POST","/api/preview",payload,allow_work=True,work_service=work)[0] in (400,403)
+    assert work.calls == []
+
+
+def test_preview_validation_errors_are_422_without_comparison():
+    work = FakeWorkService(InputValidationError(["מחיר"],["סתירה"]))
+    status, _, body = request(FakeService(),"POST","/api/preview",{"mode":"work","property":{}},
+                              allow_work=True,work_service=work)
+    assert status == 422 and json.loads(body)["completion_requests"] == ["מחיר"]
+    assert work.calls == [("preview",{})]
+
+
+@pytest.mark.parametrize("query", ["", "?mode=demo", "?mode=live", "?mode=work&mode=work",
+                                  "?mode=work&path=.env", "?mode=work&directory=runs"])
+def test_history_does_not_accept_directories_other_modes_or_ambiguous_queries(query):
+    work = FakeWorkService()
+    assert request(FakeService(),path="/api/history"+query,allow_work=True,work_service=work)[0] == 400
+    assert work.calls == []
+
+
+@pytest.mark.parametrize("path", ["/runs/work/log.csv", "/runs/work/"+RUN_ID+".json",
+                                "/api/run?mode=work&run_id=../.env",
+                                "/api/run?mode=work&request_id=../private",
+                                "/api/run?mode=work&run_id="+RUN_ID+"&mode=live"])
+def test_work_storage_is_never_directly_exposed_and_recovery_cannot_escape(path):
+    work = FakeWorkService()
+    assert request(FakeService(),path=path,allow_work=True,work_service=work)[0] in (400,404)
+    assert work.calls == []
+
+
+def test_work_flag_permits_legacy_saved_read_without_enabling_paid_legacy_compare():
+    live, work = FakeLiveService(), FakeWorkService()
+    kwargs = {"allow_work":True,"work_service":work,"live_service":live}
+    assert request(FakeService(),path="/api/run?mode=live&run_id="+RUN_ID,**kwargs)[0] == 200
+    assert request(FakeService(),"POST","/api/compare",LIVE,**kwargs)[0] == 403
+    assert live.calls == [("get_run",RUN_ID)] and work.calls == []
+
+
+def test_work_factory_builds_fixed_cap_and_read_only_legacy_without_calls(monkeypatch):
+    import comparison_flow
+    constructed = []
+    monkeypatch.setattr(comparison_flow,"OperationalComparisonService",lambda **kwargs: constructed.append(("work",kwargs)) or FakeWorkService())
+    monkeypatch.setattr(comparison_flow,"LiveComparisonService",lambda **kwargs: constructed.append(("legacy",kwargs)) or FakeLiveService())
+    monkeypatch.setattr(local_ui,"HTTPServer",lambda address,handler: address)
+    assert local_ui.make_server(8765,FakeService(),allow_work=True) == ("127.0.0.1",8765)
+    assert constructed == [("legacy",{"enabled":False,"max_cost_usd":"0.50","max_total_runs":1}),
+                           ("work",{"enabled":True,"max_cost_usd":"0.50"})]
+
+
+def test_work_html_has_open_required_groups_review_consent_and_original_input_snapshot():
+    html = (local_ui.ROOT/"web"/"index.html").read_text(encoding="utf-8")
+    source = (local_ui.ROOT/"web"/"app.js").read_text(encoding="utf-8")
+    assert 'id="feature-fields"' in html and 'id="impression-fields"' in html
+    assert 'id="work-consent" type="checkbox"' in html
+    assert 'id="review-view"' in html and 'id="snapshot-facts"' in html
+    assert "מספר הבניין הפנימי" in html and "שיפור מוצריה" in html
+    assert 'api("/api/preview"' in source and "payload.work_consent = true" in source
+    assert 'populateProperty(run.property)' in source and 'state.source="empty"' in source
+    assert 'replaceAll(",", "")' in source
