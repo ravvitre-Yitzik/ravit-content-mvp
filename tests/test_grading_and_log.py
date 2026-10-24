@@ -169,3 +169,16 @@ def test_nested_ui_log_links_to_actual_run(tmp_path, monkeypatch):
     rows = run_log.rows_for_run(path)
     assert rows[0]["full_output"] == "runs/ui-live/r1.json"
     assert (tmp_path / rows[0]["full_output"]).is_file()
+
+
+def test_log_rebuild_failure_preserves_previous_complete_csv(runs, monkeypatch):
+    two_ok(runs)
+    path = run_log.write_log()
+    original = path.read_bytes()
+    def fail(_path):
+        raise OSError("read interrupted")
+    monkeypatch.setattr(run_log, "rows_for_run", fail)
+    with pytest.raises(OSError):
+        run_log.write_log()
+    assert path.read_bytes() == original
+    assert not list(runs.glob(".log-*.tmp"))

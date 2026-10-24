@@ -7,6 +7,8 @@ Run: python run_log.py
 import csv
 import hashlib
 import json
+import os
+import tempfile
 import sys
 from pathlib import Path
 
@@ -94,11 +96,19 @@ def rows_for_run(run_path):
 def write_log(runs_dir=None):
     runs_dir = runs_dir or RUNS_DIR
     path = Path(runs_dir) / LOG_NAME
-    with path.open("w", encoding="utf-8-sig", newline="") as f:  # BOM so Excel shows Hebrew correctly
-        writer = csv.DictWriter(f, fieldnames=COLUMNS)
-        writer.writeheader()
-        for run_path in run_files(runs_dir):
-            writer.writerows(rows_for_run(run_path))
+    fd, temporary = tempfile.mkstemp(prefix=".log-", suffix=".tmp", dir=runs_dir)
+    try:
+        # Publish a complete derived log. Immutable run JSON remains the source of truth.
+        with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=COLUMNS)
+            writer.writeheader()
+            for run_path in run_files(runs_dir):
+                writer.writerows(rows_for_run(run_path))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return path
 
 

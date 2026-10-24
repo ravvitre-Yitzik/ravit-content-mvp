@@ -1,111 +1,222 @@
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = {template: null, sample: null, fields: new Map(), requestId: null, run: null, busy: false, saved: false, mode: "demo", modes: {}, liveAttempted: false, liveRequestId: null};
-const statusLabels = {known: "ערך נמסר", not_provided: "לא נמסר", confirmed_unknown: "ללא נתון — איני יודע/ת", conflicting: "נתונים סותרים — נדרש תיקון"};
+const state = {template: null, sample: null, fields: new Map(), modes: {}, mode: "demo", view: "input",
+  requestId: null, workRequestId: null, liveRequestId: null, liveAttempted: false,
+  reviewProperty: null, reviewBudget: null, reviewMode: null, attempted: false, uncertain: false,
+  run: null, saved: false, busy: false, dirty: false, gradeDirty: false, workStarted: false, source: "sample"};
 const labels = ["א", "ב"];
+const statusLabels = {known: "ערך נמסר", not_provided: "לא נמסר", confirmed_unknown: "ללא נתון — איני יודע/ת", conflicting: "נתונים סותרים — נדרש תיקון"};
 const numericFields = new Set(["floor", "area_sqm", "rooms", "price", "total_floors", "balcony_area_sqm", "garden_area_sqm"]);
+const featureFields = new Set(["balcony", "garden", "storage", "safe_room", "building_shelter", "elevator", "parking"]);
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
 }
-function option(value, text) {
-  const node = el("option", "", text);
-  node.value = value;
-  return node;
-}
+function option(value, text) { const node = el("option", "", text); node.value = value; return node; }
+function remember(key, value) { try { sessionStorage.setItem(key, value); } catch { /* Server idempotency is independent. */ } }
+function recalled(key) { try { return sessionStorage.getItem(key); } catch { return null; } }
 function notice(message = "", details = [], error = false) {
-  const node = $("notice");
-  node.replaceChildren();
-  node.classList.toggle("error", error);
+  const node = $("notice"); node.replaceChildren(); node.classList.toggle("error", error);
   node.setAttribute("role", error ? "alert" : "status");
   if (message) node.append(el("strong", "", message));
   if (details.length) {
     const list = el("ul");
-    details.forEach((text) => list.append(el("li", "", String(text))));
+    for (const detail of details) {
+      const item = el("li");
+      if (detail && typeof detail === "object" && detail.key) {
+        const button = el("button", "field-link", detail.text);
+        button.type = "button";
+        button.addEventListener("click", () => focusField(detail.key));
+        item.append(button);
+      } else item.textContent = String(detail);
+      list.append(item);
+    }
     node.append(list);
   }
   if (error) node.focus();
 }
 async function api(path, payload) {
-  const response = await fetch(path, payload === undefined ? {cache: "no-store"} : {
-    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+  const response = await fetch(path, payload === undefined ? {cache:"no-store"} : {
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload)
   });
   let result;
-  try { result = await response.json(); } catch {
-    throw new Error("לא התקבלה תשובה תקינה. אפשר לנסות שוב עם אותם נתונים.");
-  }
+  try { result = await response.json(); } catch { throw new Error("לא התקבלה תשובה תקינה מהשרת המקומי."); }
   if (!response.ok) {
     const error = new Error(result.error || "הפעולה לא הושלמה.");
-    error.details = [...(result.completion_requests || []).map((x) => "יש להשלים: " + x), ...(result.problems || [])];
+    error.status = response.status; error.code = result.code;
+    error.details = [...(result.completion_requests || []).map((text) => "יש להשלים: " + text), ...(result.problems || [])];
     throw error;
   }
   return result;
 }
-function remember(key, value) {
-  try { sessionStorage.setItem(key, value); } catch { /* Backend enforces the one-run allowance independently. */ }
+function report(error) {
+  notice(error instanceof TypeError ? "החיבור המקומי אינו זמין. ודאו שהיישום פועל." : error.message, error.details || [], true);
 }
-function recalled(key) {
-  try { return sessionStorage.getItem(key); } catch { return null; }
-}
-function liveMode() { return state.mode === "live"; }
-function refreshCompare() {
-  $("compare-button").disabled = state.busy || !!state.run ||
-    (liveMode() && (!$("live-confirmed").checked || state.liveAttempted));
+function paidMode() { return state.mode === "work" || state.mode === "live"; }
+function canReadMode(mode) { return mode === "work" ? !!state.modes.work?.available : mode === "live" && !!(state.modes.live?.read_available || state.modes.live?.available); }
+function activateView(view, focus = true) {
+  state.view = view;
+  const mapping = {input:"input-view",review:"review-view",results:"results-section",history:"history-view"};
+  for (const [key,id] of Object.entries(mapping)) $(id).hidden = key !== view;
+  for (const key of ["input","results","history"]) {
+    const active = key === view || key === "input" && view === "review";
+    $("nav-" + key).classList.toggle("active", active);
+    if (active) $("nav-" + key).setAttribute("aria-current","page");
+    else $("nav-" + key).removeAttribute("aria-current");
+  }
+  $("nav-results").disabled = !state.run || state.busy;
+  if (focus) $(view === "input" ? "input-title" : view === "review" ? "review-title" : view === "results" ? "results-title" : "history-title").focus();
 }
 function updateModeText() {
-  const live = liveMode();
-  $("mode-badge").textContent = live ? "מצב חי — פנייה אמיתית לספקים" : "מצב הדגמה — ללא פנייה לספקים";
-  $("mode-badge").classList.toggle("live-badge", live);
-  $("live-consent").hidden = !live;
-  $("mode-help").textContent = live ? "הדוגמה הבדיונית בלבד. הנתונים נעולים לעריכה." :
-    state.modes.live?.available ? "הדגמה היא ברירת המחדל. מעבר לחי דורש אישור נוסף." : "הדגמה בלבד. מצב חי אינו פתוח בשרת המקומי.";
-  $("action-title").textContent = live ? "הפקה אמיתית — הדוגמה הבדיונית בלבד" : "יצירת תוכן להדגמה בלבד";
-  $("action-help").textContent = live ? "קריאה אחת לכל ספק. אומדן עד $0.50 בסך הכול; אין ניסיונות חוזרים." :
-    "שתי חבילות מדומות, ללא קריאה לספקים וללא עלות הפקה.";
-  $("waiting-title").textContent = live ? "ממתינים לתשובות הספקים…" : "מכינים את שתי חבילות ההדגמה…";
-  $("waiting-help").textContent = live ? "קריאה אחת לכל ספק, ברצף וללא ניסיון חוזר. אין להפעיל השוואה נוספת." :
-    "אותם נתוני נכס לשתי החבילות. אין פנייה לספקים.";
-  if (!state.run) $("compare-button").textContent = live ? state.liveAttempted ?
-    "ניסיון חי כבר החל · יש לבדוק את ההרצה השמורה" : "הפעלת השוואה חיה · עד $0.50" : "הפעלת השוואת הדגמה ←";
-  $("property-fields").disabled = state.busy || live;
-  $("load-sample").disabled = state.busy || live;
-  refreshCompare();
+  const work = state.mode === "work", legacy = state.mode === "live";
+  $("mode").value = state.mode;
+  $("mode-badge").textContent = work ? "מצב עבודה · Google ו-Anthropic" : legacy ? "בדיקה חיה קודמת · תוצאה שמורה" : "מצב הדגמה — ללא פנייה לספקים";
+  $("mode-badge").classList.toggle("live-badge", work || legacy);
+  $("mode-help").textContent = work ? "הנתונים ניתנים לעריכה. שליחה דורשת אישור נפרד בכל השוואה." :
+    legacy ? "צפייה בהרצה קיימת בלבד, ללא הפקה נוספת." :
+    state.modes.work?.available ? "אפשר לתרגל כאן או לבחור מצב עבודה אמיתי." : "הדגמה היא ברירת המחדל. מצב עבודה אינו פתוח בשרת הזה.";
+  $("action-title").textContent = work ? "שתי הצעות כתיבה, באישור שלך" : "מרחב לתרגול, בלי קריאה לספקים";
+  $("action-help").textContent = work ? "עד $0.50 לכל השוואה. תחילה בודקים את הנתונים ואת האומדן, ואז מאשרים שליחה." :
+    "אותו תהליך עבודה, עם תוצרים מדומים וללא עלות הפקה.";
+  $("input-context").textContent = state.source === "sample" ? "נטענה דוגמה בדיונית במפורש. אם עובדים על נכס אמיתי, יש לנקות את הטופס לפני הזנתו." :
+    state.source === "saved" ? "הנתונים הועתקו מההרצה שנפתחה. עריכתם תיצור השוואה נפרדת." :
+    work ? "מתחילים ללא נתונים. מוסרים רק מידע שיש הרשאה להעביר לספקים; לא ידוע נשאר לא ידוע." :
+    "הדגמה משתמשת בספקים מדומים. אפשר לטעון דוגמה בדיונית או להזין פרטים.";
+  $("input-context").classList.toggle("sample-context",state.source === "sample");
 }
-function report(error) {
-  notice(error instanceof TypeError ? "לא ניתן להתחבר למסך המקומי. ודאו שהשרת פועל ונסו שוב." : error.message,
-    error.details || [], true);
-}
-function newId() {
-  return crypto.randomUUID();
+function updateRecovery() {
+  const work = canReadMode("work") && !!state.workRequestId;
+  const live = canReadMode("live") && !!state.liveRequestId;
+  $("recovery-panel").hidden = !work && !live;
+  $("recover-work").hidden = !work; $("recover-live").hidden = !live;
+  $("recover-work").disabled = state.busy; $("recover-live").disabled = state.busy;
+  $("recovery-help").textContent = state.uncertain ?
+    "מצב ניסיון העבודה האחרון אינו ודאי. שחזרו את התוצאה לפני כל החלטה על השוואה חדשה. שחזור אינו פונה לספקים." :
+    "שחזור פותח את הניסיון השמור בלבד. הוא אינו פונה לספקים.";
 }
 function setBusy(busy) {
   state.busy = busy;
-  $("property-fields").disabled = busy || liveMode();
-  $("load-sample").disabled = busy || liveMode();
+  const locked = state.mode === "live" || state.mode === "work" && state.uncertain;
+  $("property-fields").disabled = busy || locked;
+  $("load-sample").disabled = busy || locked; $("clear-input").disabled = busy || locked;
   $("mode").disabled = busy;
-  $("live-confirmed").disabled = busy || state.liveAttempted;
-  $("load-saved").disabled = busy;
-  $("recover-live").disabled = busy || !state.liveRequestId;
-  refreshCompare();
+  $("compare-button").disabled = busy || locked || !state.template;
+  $("send-comparison").disabled = busy || state.attempted || state.mode === "live" ||
+    state.mode === "work" && !$("work-consent").checked;
+  $("work-consent").disabled = busy || state.attempted;
+  $("load-saved").disabled = busy; $("refresh-history").disabled = busy;
+  $("new-comparison").disabled = busy; $("back-to-input").disabled = busy;
+  $("nav-input").disabled = busy; $("nav-results").disabled = busy || !state.run;
+  $("nav-history").disabled = busy || !state.modes.work?.available;
   $("grading-fields").disabled = busy || state.saved;
   $("save-button").disabled = busy || state.saved;
-  document.querySelectorAll(".score-select").forEach((node) => {node.disabled = busy || state.saved;});
+  restoreScoreLocks(); updateRecovery();
   $("property-form").setAttribute("aria-busy", String(busy));
   $("grading-form").setAttribute("aria-busy", String(busy));
 }
-function invalidate() {
-  state.requestId = null;
-  state.run = null;
-  state.saved = false;
-  $("results-section").hidden = true;
-  $("saved-message").hidden = true;
-  updateModeText();
-  $("step-input").classList.add("active");
-  $("step-results").classList.remove("active");
-  $("step-grade").classList.remove("active");
+function invalidateDraft() {
+  state.reviewProperty = null; state.reviewBudget = null; state.reviewMode = null;
+  $("work-consent").checked = false;
+  $("step-review").classList.remove("active");
+  if (!state.run) {
+    $("step-results").classList.remove("active");
+    $("step-grade").classList.remove("active");
+    $("step-input").classList.add("active");
+  }
+  state.dirty = true;
   notice();
+}
+function normalizeNumberText(value) {
+  const text = value.trim();
+  if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(text)) return text.replaceAll(",", "");
+  if (/^-?\d{1,3}( \d{3})+(\.\d+)?$/.test(text)) return text.replaceAll(" ", "");
+  return text;
+}
+function populateProperty(prop) {
+  for (const [key, control] of state.fields) {
+    const data = prop?.fields?.[key] || {status:"not_provided",value:null};
+    control.status.value = data.status;
+    control.input.value = control.spec.allowed_values ?
+      data.status === "known" ? String(control.spec.allowed_values.findIndex((value) => value === data.value)) : "" :
+      Array.isArray(data.value) ? data.value.join(", ") : data.value ?? "";
+    syncStatus(key);
+  }
+  updateConditional();
+}
+function focusField(key) {
+  activateView("input", false);
+  if (!state.template.fields[key].required && !state.template.fields[key].required_if) $("optional-details").open = true;
+  const field = state.fields.get(key);
+  (field.input.disabled ? field.status : field.input).focus();
+}
+function clientIssues(prop) {
+  const issues = [];
+  for (const [key,spec] of Object.entries(state.template.fields)) {
+    const field = prop.fields[key], status = field.status, value = field.value;
+    const conditional = spec.required_if && Object.entries(spec.required_if).every(([name,expected]) =>
+      prop.fields[name].status === "known" && prop.fields[name].value === expected);
+    let problem = "";
+    if (status === "conflicting") problem = "יש לתקן את הנתונים הסותרים";
+    else if (status === "not_provided" && (spec.required || conditional)) problem = "יש למסור ערך או לאשר שאין נתון";
+    else if (status === "confirmed_unknown" && spec.must_be_known) problem = "נדרש ערך ידוע";
+    else if (status === "known" && (value === null || value === "" || Array.isArray(value) && !value.length)) problem = "סומן ערך ידוע, אך הערך ריק";
+    else if (status === "known" && ["price","area_sqm","rooms"].includes(key) &&
+      (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) problem = "יש להזין מספר חיובי; אפשר להשתמש בפסיקים להפרדת אלפים";
+    state.fields.get(key).input.setAttribute("aria-invalid", String(!!problem));
+    state.fields.get(key).status.setAttribute("aria-invalid", String(!!problem));
+    if (problem) issues.push({key,text:spec.label + ": " + problem});
+  }
+  return issues;
+}
+function fieldText(field) {
+  if (!field || field.status === "not_provided") return "לא נמסר";
+  if (field.status === "confirmed_unknown") return "ללא נתון";
+  if (field.status === "conflicting") return "נתונים סותרים";
+  const value = field.value;
+  return value === true ? "כן" : value === false ? "לא" : Array.isArray(value) ? value.join(", ") : String(value ?? "");
+}
+function renderFacts(node, prop) {
+  node.replaceChildren();
+  for (const [key,spec] of Object.entries(state.template.fields)) {
+    const row = el("div", "fact" + (spec.publishable === false ? " internal" : ""));
+    row.append(el("dt","",spec.label + (spec.publishable === false ? " · פנימי" : "")),el("dd","",fieldText(prop?.fields?.[key])));
+    node.append(row);
+  }
+}
+function renderReview(prop, budget) {
+  state.reviewProperty = structuredClone(prop); state.reviewBudget = budget; state.reviewMode = state.mode;
+  $("review-overview").replaceChildren();
+  const values = [["הנכס",["street","city"].map(key=>fieldText(prop.fields[key])).join(", ")],
+    ["סוג העסקה",fieldText(prop.fields.deal_type)],
+    [state.mode === "work" ? "אומדן לפני שליחה" : "מצב ההפקה",state.mode === "work" ?
+      budget.estimated_max_total + " " + budget.currency + " · עד $0.50 להשוואה" : "שתי חבילות מדומות"]];
+  for (const [label,value] of values) { const card=el("div","review-stat");card.append(el("small","",label),el("strong","",value));$("review-overview").append(card); }
+  renderFacts($("review-facts"),prop);
+  $("work-consent-panel").hidden = state.mode !== "work"; $("demo-review").hidden = state.mode !== "demo";
+  $("work-consent").checked = false;
+  $("send-comparison").textContent = state.mode === "work" ? "שליחה לשני הספקים · עד $0.50" : "הפקת טיוטות הדגמה";
+  $("step-review").classList.add("active");
+  activateView("review"); setBusy(false);
+}
+function confirmReplacement() {
+  if (state.gradeDirty && !state.saved) return window.confirm("יש דירוג שטרם נשמר. מעבר להרצה אחרת יחליף אותו. להמשיך?");
+  if (state.dirty) return window.confirm("יש נתונים שעריכתך בהם לא נשמרה. פתיחת הרצה אחרת תחליף את הטיוטה. להמשיך?");
+  return true;
+}
+function startNewDraft(keepData = false) {
+  if (state.busy) return;
+  if (!keepData && state.dirty && !window.confirm("בטופס יש שינויים שטרם נשמרו. לפתוח השוואה חדשה מטופס ריק?")) return;
+  if (state.gradeDirty && !state.saved && !window.confirm("הדירוג הנוכחי טרם נשמר ויאבד. להתחיל השוואה חדשה?")) return;
+  if (state.uncertain && !window.confirm("מצב הניסיון הקודם אינו ודאי וייתכן שכבר חויב. השוואה חדשה תהיה פעולה נפרדת בתשלום. להמשיך?")) return;
+  state.mode = state.mode === "live" ? state.modes.work?.available ? "work" : "demo" : state.mode;
+  state.run = null; state.saved = false; state.gradeDirty = false; state.requestId = null; state.attempted = false; state.uncertain = false;
+  if (!keepData) {populateProperty({fields:{}});state.source="empty";}
+  else state.source="saved";
+  invalidateDraft(); state.dirty = false;
+  updateModeText(); setBusy(false); activateView("input");
+  notice(keepData ? "נתוני ההרצה הועתקו לטיוטה חדשה. ההרצה והדירוג הקודמים לא ישתנו." : "נפתחה השוואה חדשה מטופס ריק. ההרצות הקודמות לא ישתנו.");
 }
 function syncStatus(key) {
   const field = state.fields.get(key);
@@ -158,23 +269,14 @@ function buildFields(template) {
       spec.must_be_known ? "נדרש ערך ידוע כדי להפיק טיוטה." : "";
     input.setAttribute("aria-describedby", hint.id);
     wrapper.append(label, status, input, hint);
-    (spec.required || spec.required_if ? $("required-fields") : $("optional-fields")).append(wrapper);
+    const target = key === "ravit_impression" ? "impression-fields" :
+      featureFields.has(key) ? "feature-fields" : spec.required || spec.required_if ? "required-fields" : "optional-fields";
+    wrapper.dataset.fieldKey = key;
+    $(target).append(wrapper);
     state.fields.set(key, {spec, status, input, hint});
     status.addEventListener("change", () => syncStatus(key));
     if (key === "safe_room") input.addEventListener("change", updateConditional);
   }
-}
-function loadSample() {
-  invalidate();
-  for (const [key, control] of state.fields) {
-    const data = state.sample.fields[key] || {status: "not_provided", value: null};
-    control.status.value = data.status;
-    control.input.value = control.spec.allowed_values ?
-      (data.status === "known" ? String(control.spec.allowed_values.findIndex((value) => value === data.value)) : "") :
-      Array.isArray(data.value) ? data.value.join(", ") : data.value ?? "";
-    syncStatus(key);
-  }
-  updateConditional();
 }
 function propertyData() {
   const fields = {};
@@ -182,7 +284,7 @@ function propertyData() {
     const status = control.status.value;
     let value = null;
     if (["known", "conflicting"].includes(status)) {
-      const raw = control.input.value.trim();
+      const raw = numericFields.has(key) ? normalizeNumberText(control.input.value) : control.input.value.trim();
       value = control.spec.allowed_values ? control.spec.allowed_values[Number(raw)] : raw;
       if (control.spec.allowed_values && raw === "") value = null;
       if (control.spec.multiple) value = raw.split(",").map((part) => part.trim()).filter(Boolean);
@@ -212,7 +314,14 @@ function resultMetadata(result, live) {
 function showRun(run, grading) {
   state.run = run;
   state.saved = false;
-  const live = run.mode === "live";
+  const live = run.mode !== "demo";
+  state.mode = run.mode || "demo";
+  state.attempted = true;
+  state.uncertain = false;
+  state.dirty = false;
+  state.gradeDirty = false;
+  if (run.property && typeof run.property === "object") { populateProperty(run.property); state.source="saved"; }
+  renderFacts($("snapshot-facts"), run.property && typeof run.property === "object" ? run.property : state.reviewProperty || propertyData());
   $("results-badge").textContent = live ? "תשובות מספקים" : "תוצרים מדומים";
   $("results-badge").classList.toggle("live-badge", live);
   $("results-help").textContent = live ?
@@ -234,9 +343,16 @@ function showRun(run, grading) {
     $("budget-summary").textContent = lines.join("\n");
   }
   if (live) {
-    state.liveAttempted = true;
     $("saved-run-id").value = run.run_id;
-    remember("ravit-ui-live-run", run.run_id);
+    $("saved-mode").value = run.mode;
+    if (run.mode === "work") {
+      state.workRequestId = run.request_id || state.workRequestId;
+      remember("ravit-ui-work-run", run.run_id);
+      if (state.workRequestId) remember("ravit-ui-work-completed-request", state.workRequestId);
+    } else {
+      state.liveAttempted = true;
+      remember("ravit-ui-live-run", run.run_id);
+    }
   }
   $("packages").replaceChildren();
   $("choice").replaceChildren(option("", "בחירת חבילה"));
@@ -291,9 +407,12 @@ function showRun(run, grading) {
   $("results-section").hidden = false;
   $("step-results").classList.add("active");
   $("step-grade").classList.add("active");
-  $("compare-button").textContent = live ? "ההרצה החיה נשמרה · אין הפקה נוספת" : "ההשוואה מוכנה · שינוי נתונים יתחיל השוואה חדשה";
+  $("compare-button").textContent = "בדיקה לפני הפקה ←";
   $("save-button").hidden = false;
   if (grading) showSaved(grading);
+  updateModeText();
+  updateRecovery();
+  activateView("results");
 }
 function restoreScoreLocks() {
   document.querySelectorAll(".score-select").forEach((node) => {
@@ -302,6 +421,7 @@ function restoreScoreLocks() {
 }
 function showSaved(grading) {
   state.saved = true;
+  state.gradeDirty = false;
   document.querySelectorAll(".score-select").forEach((node) => { node.value = grading.scores?.[node.dataset.label] ?? ""; });
   $("choice").value = grading.choice;
   $("note").value = grading.note || "";
@@ -312,124 +432,161 @@ function showSaved(grading) {
   $("saved-message").textContent = "הדירוג והבחירה נשמרו. הדירוג מוצג כעת לקריאה בלבד.\nהבחירה אינה אישור לפרסום.";
   $("saved-message").hidden = false;
 }
-$("property-form").addEventListener("input", () => { if (state.template && !state.busy) invalidate(); });
-$("property-form").addEventListener("change", () => { if (state.template && !state.busy) invalidate(); });
+
+$("property-form").addEventListener("input", () => { if (!state.busy) invalidateDraft(); });
+$("property-form").addEventListener("change", () => { if (!state.busy) invalidateDraft(); });
 $("load-sample").addEventListener("click", () => {
-  if (!state.busy && !liveMode()) { loadSample(); notice("נטענה דוגמה בדיונית. אפשר לעדכן את הנתונים לפני ההפעלה."); }
+  if (state.busy || !confirmReplacement()) return;
+  populateProperty(state.sample); state.source="sample"; invalidateDraft(); updateModeText(); notice("נטענה דוגמה בדיונית. בדקו את הפרטים לפני ההפקה.");
+});
+$("clear-input").addEventListener("click", () => {
+  if (state.busy || !confirmReplacement()) return;
+  populateProperty({fields:{}}); state.source="empty"; invalidateDraft(); updateModeText(); notice("הטופס נוקה. שדות החובה נותרו גלויים להשלמה.");
 });
 $("property-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  if (state.busy || state.run || !state.template) return;
-  if (liveMode() && (!$("live-confirmed").checked || state.liveAttempted)) return;
-  state.requestId ||= newId();
-  if (liveMode()) {
-    state.liveAttempted = true;
-    state.liveRequestId = state.requestId;
-    remember("ravit-ui-live-attempt", state.requestId);
-  }
-  notice();
-  setBusy(true);
-  $("waiting").hidden = false;
+  if (state.busy || state.mode === "live" || state.uncertain && state.mode === "work") return;
+  const prop = propertyData(), issues = clientIssues(prop);
+  if (issues.length) { notice("יש להשלים או לתקן את הפרטים לפני ההפקה.", issues, true); focusField(issues[0].key); return; }
+  notice(); setBusy(true);
   try {
-    const payload = {property: liveMode() ? structuredClone(state.sample) : propertyData(),
-      request_id: state.requestId, mode: state.mode};
-    if (liveMode()) payload.live_confirmed = true;
-    const result = await api("/api/compare", payload);
-    showRun(result.run, result.grading);
-    $("save-button").hidden = state.saved;
-    $("results-title").focus();
-    $("results-section").scrollIntoView({behavior: "auto", block: "start"});
-    notice(liveMode() ? "ההרצה החיה הסתיימה. בדקו את מצב שתי החבילות לפני הדירוג." :
-      "שתי חבילות ההדגמה מוכנות. קראו ובדקו את התוכן לפני הדירוג.");
+    if (state.mode === "work") {
+      const preview = await api("/api/preview",{mode:"work",property:prop});
+      populateProperty(preview.property);
+      renderReview(preview.property,preview.budget_estimate);
+    } else renderReview(prop,null);
   } catch (error) {
-    if (liveMode()) {
-      notice("ייתכן שהבקשה כבר נשלחה לספקים. אין להפעיל הרצה חדשה; יש לבדוק את ההרצה השמורה.",
-        ["מזהה הפעולה שנשמר: " + state.requestId, error instanceof TypeError ? "החיבור המקומי נותק." : error.message], true);
-      updateModeText();
-    } else report(error);
-  }
-  finally { $("waiting").hidden = true; setBusy(false); restoreScoreLocks(); }
-});
-$("grading-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (state.busy || state.saved || !state.run) return;
-  const scores = {};
-  let missing = false;
-  document.querySelectorAll(".score-select").forEach((node) => {
-    if (node.dataset.gradable === "true") {
-      if (!node.value) missing = true;
-      else scores[node.dataset.label] = Number(node.value);
+    report(error);
+    if (error.details?.length) {
+      const target = [...state.fields].find(([,control]) => error.details.some(text=>text.includes(control.spec.label)));
+      if (target) focusField(target[0]);
     }
-  });
-  if (missing || !$("choice").value) {
-    notice("יש לבחור ציון לכל חבילה תקינה ובחירה מסכמת.", [], true);
-    return;
-  }
-  setBusy(true);
-  notice();
-  try {
-    const result = await api("/api/grade", {run_id: state.run.run_id, mode: state.run.mode || "demo", scores, choice: $("choice").value, note: $("note").value});
-    showSaved(result.grading);
-    notice(result.already_saved ? "הדירוג הזה כבר נשמר. לא נוצרה רשומה נוספת." : "הדירוג והבחירה נשמרו בהצלחה.");
-  } catch (error) { report(error); }
-  finally { setBusy(false); restoreScoreLocks(); }
+  } finally { setBusy(false); }
 });
-$("mode").addEventListener("change", () => {
+$("back-to-input").addEventListener("click", () => {
   if (state.busy) return;
-  state.mode = $("mode").value === "live" && state.modes.live?.available ? "live" : "demo";
-  $("mode").value = state.mode;
-  $("live-confirmed").checked = false;
-  loadSample();
-  updateModeText();
-  setBusy(false);
+  invalidateDraft(); activateView("input");
 });
-$("live-confirmed").addEventListener("change", refreshCompare);
-async function openSaved(reference, byRequest = false) {
-  if (state.busy || !state.modes.live?.available) return;
-  const valid = byRequest ? /^[A-Za-z0-9_-]{1,100}$/.test(reference) :
-    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reference);
-  if (!valid) {
-    notice("יש להזין מזהה תקין של הרצה חיה שמורה.", [], true);
-    return;
+$("work-consent").addEventListener("change", () => setBusy(false));
+$("send-comparison").addEventListener("click", async () => {
+  if (state.busy || state.attempted || !state.reviewProperty || state.reviewMode !== state.mode || state.mode === "live") return;
+  if (state.mode === "work" && !$("work-consent").checked) return;
+  state.requestId ||= crypto.randomUUID();
+  state.attempted = true;
+  if (state.mode === "work") {
+    state.workRequestId = state.requestId; remember("ravit-ui-work-attempt",state.requestId);
   }
-  setBusy(true);
-  notice();
+  const payload = {mode:state.mode,property:structuredClone(state.reviewProperty),request_id:state.requestId};
+  if (state.mode === "work") payload.work_consent = true;
+  notice(); setBusy(true); $("waiting").hidden = false;
+  $("waiting-title").textContent = state.mode === "work" ? "ממתינים לתשובות Google ו-Anthropic…" : "מכינים שתי חבילות הדגמה…";
+  $("waiting-help").textContent = state.mode === "work" ? "קריאה אחת לכל ספק, ללא ניסיון חוזר. אפשר לשחזר תוצאה שמורה אם החיבור נקטע." : "לא מתבצעת פנייה לספקים.";
   try {
-    const data = await api("/api/run?mode=live&" + (byRequest ? "request_id=" : "run_id=") + encodeURIComponent(reference));
-    if (data.run.mode !== "live") throw new Error("ההרצה אינה הרצה חיה.");
-    showRun(data.run, data.grading);
-    notice("ההרצה השמורה נפתחה. לא בוצעה קריאה נוספת לספקים.");
-    $("results-title").focus();
-  } catch (error) { report(error); }
-  finally { setBusy(false); restoreScoreLocks(); }
-}
-$("load-saved").addEventListener("click", () => openSaved($("saved-run-id").value.trim()));
-$("recover-live").addEventListener("click", () => {
-  if (state.liveRequestId) openSaved(state.liveRequestId, true);
+    const data = await api("/api/compare",payload);
+    showRun(data.run,data.grading);
+    notice("ההשוואה נשמרה. קראו ובדקו את התוכן לפני הדירוג.");
+  } catch (error) {
+    if (paidMode()) {
+      state.uncertain = true;
+      notice("ייתכן שהבקשה כבר נשלחה. אין להפיק שוב את אותו ניסיון; השתמשו בשחזור התוצאה.",
+        [error.message,"מזהה הפעולה השמור: " + state.requestId],true);
+    } else {
+      state.attempted = false;
+      report(error);
+    }
+  } finally { $("waiting").hidden = true; setBusy(false); }
 });
+$("grading-form").addEventListener("input", () => { if (!state.saved) state.gradeDirty = true; });
+$("grading-form").addEventListener("change", () => { if (!state.saved) state.gradeDirty = true; });
+$("packages").addEventListener("change", () => { if (!state.saved) state.gradeDirty = true; });
+$("grading-form").addEventListener("submit", async (event) => {
+  event.preventDefault(); if (state.busy || state.saved || !state.run) return;
+  const scores = {}; let missing = false;
+  document.querySelectorAll(".score-select").forEach(node=>{
+    if (node.dataset.gradable === "true") { if (!node.value) missing=true;else scores[node.dataset.label]=Number(node.value); }
+  });
+  if (missing || !$("choice").value) { notice("יש לבחור ציון לכל חבילה תקינה ובחירה מסכמת.",[],true);return; }
+  setBusy(true); notice();
+  try {
+    const data = await api("/api/grade",{mode:state.run.mode || "demo",run_id:state.run.run_id,scores,choice:$("choice").value,note:$("note").value});
+    showSaved(data.grading); notice(data.already_saved ? "הדירוג כבר נשמר. לא נוצרה רשומה נוספת." : "הדירוג והבחירה נשמרו בהצלחה.");
+  } catch(error) { report(error); } finally { setBusy(false); }
+});
+$("new-comparison").addEventListener("click",()=>startNewDraft(true));
+$("nav-input").addEventListener("click",()=>{
+  if (state.run || state.attempted || state.uncertain) startNewDraft();
+  else { activateView("input");notice(); }
+});
+$("nav-results").addEventListener("click",()=>{if(state.run && !state.busy){activateView("results");notice();}});
+$("mode").addEventListener("change",()=>{
+  if (state.busy) return;
+  const nextMode = $("mode").value === "work" && state.modes.work?.available ? "work" : "demo";
+  if (nextMode === "work" && !state.workStarted) {
+    if (state.dirty && !confirmReplacement()) {$("mode").value=state.mode;return;}
+    populateProperty({fields:{}});state.source="empty";state.workStarted=true;
+  }
+  state.mode = nextMode;
+  invalidateDraft(); updateModeText(); setBusy(false);
+});
+async function openSaved(reference, byRequest = false, mode = state.mode) {
+  if (state.busy || !canReadMode(mode)) return;
+  const valid = byRequest ? /^[A-Za-z0-9_-]{1,100}$/.test(reference) : /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(reference);
+  if (!valid) {notice("יש להזין מזהה תקין של הרצה שמורה.",[],true);return;}
+  if (!confirmReplacement()) return;
+  setBusy(true);notice();
+  try {
+    const data = await api("/api/run?mode=" + mode + "&" + (byRequest ? "request_id=" : "run_id=") + encodeURIComponent(reference));
+    if (data.run.mode !== mode) throw new Error("מצב ההרצה אינו תואם לבקשה.");
+    showRun(data.run,data.grading); notice("התוצאה השמורה נפתחה עם נתוני הקלט המקוריים. לא בוצעה קריאה נוספת לספקים.");
+  } catch(error) {report(error);} finally {setBusy(false);}
+}
+$("recover-work").addEventListener("click",()=>openSaved(state.workRequestId,true,"work"));
+$("recover-live").addEventListener("click",()=>openSaved(state.liveRequestId,true,"live"));
+$("load-saved").addEventListener("click",()=>openSaved($("saved-run-id").value.trim(),false,$("saved-mode").value));
+function dateLabel(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "תאריך לא זמין" : new Intl.DateTimeFormat("he-IL",{dateStyle:"medium",timeStyle:"short"}).format(date);
+}
+async function loadHistory() {
+  if (state.busy || !state.modes.work?.available) return;
+  activateView("history"); notice(); setBusy(true);
+  try {
+    const data = await api("/api/history?mode=work");
+    $("history-list").replaceChildren();
+    if (!data.runs.length) {
+      const empty=el("div","empty-state");empty.append(el("h3","","עוד אין השוואות עבודה שמורות"),el("p","","אחרי ההפקה הראשונה, התוצאות והדירוגים יופיעו כאן."));
+      $("history-list").append(empty);
+    }
+    const names={completed:"שתי חבילות תקינות",partial_failure:"הפקה חלקית",failed:"ההפקה נכשלה",uncertain:"תוצאה לא ודאית · לשחזור"};
+    for(const run of data.runs){
+      const row=el("article","history-row"), identity=el("div");
+      const shortId = String(run.run_id || run.request_id || "").slice(0,8);
+      identity.append(el("strong","",dateLabel(run.date)),el("small","","מזהה: " + shortId + " · " + (run.graded ? "דירוג נשמר · לקריאה בלבד" : "טרם נשמר דירוג")));
+      const status=el("span","history-status" + (run.status==="uncertain"?" uncertain":""),names[run.status] || "הרצה שמורה");
+      const cost=el("div");cost.append(el("strong","","עלות: "+measuredCost(run.total_cost)),el("small","",run.choice ? "בחירה: "+run.choice : "ללא בחירה שמורה"));
+      const button=el("button","button secondary",run.status==="uncertain"?"בדיקת הניסיון":"פתיחת ההרצה");button.type="button";
+      button.setAttribute("aria-label",button.textContent + " · " + dateLabel(run.date) + " · " + shortId);
+      button.addEventListener("click",()=>openSaved(run.status==="uncertain"?run.request_id:run.run_id,run.status==="uncertain","work"));
+      row.append(identity,status,cost,button);$("history-list").append(row);
+    }
+  } catch(error){report(error);}finally{setBusy(false);}
+}
+$("nav-history").addEventListener("click",loadHistory);
+$("refresh-history").addEventListener("click",loadHistory);
 async function init() {
   try {
-    const data = await api("/api/schema");
-    if (data.mode !== "demo") throw new Error("המסך זמין במצב הדגמה בלבד.");
-    state.modes = data.modes || {};
-    state.liveRequestId = recalled("ravit-ui-live-attempt");
-    state.liveAttempted = !!state.liveRequestId;
-    $("live-option").disabled = !state.modes.live?.available;
-    $("saved-run-id").value = recalled("ravit-ui-live-run") || "";
-    state.template = data.template;
-    state.sample = data.sample;
-    buildFields(data.template);
-    loadSample();
-    setBusy(false);
-    updateModeText();
-    const query = new URLSearchParams(location.search);
-    if (query.get("mode") === "live" && (query.has("run_id") || query.has("request_id"))) {
-      if (!state.modes.live?.available) throw new Error("מצב חי אינו פתוח בשרת המקומי.");
-      state.mode = "live";
-      $("mode").value = "live";
-      updateModeText();
-      await openSaved(query.get("run_id") || query.get("request_id"), !query.has("run_id"));
+    const data=await api("/api/schema");
+    state.template=data.template;state.sample=data.sample;state.modes=data.modes || {};
+    state.workRequestId=recalled("ravit-ui-work-attempt");state.liveRequestId=recalled("ravit-ui-live-attempt");
+    state.uncertain=!!state.workRequestId && recalled("ravit-ui-work-completed-request")!==state.workRequestId;
+    $("work-option").disabled=!state.modes.work?.available;
+    $("live-option").disabled=true;
+    buildFields(data.template);populateProperty(data.sample);
+    updateModeText();setBusy(false);activateView("input",false);
+    const query=new URLSearchParams(location.search),mode=query.get("mode");
+    if ((mode==="live" || mode==="work") && (query.has("run_id") || query.has("request_id"))) {
+      await openSaved(query.get("run_id") || query.get("request_id"),!query.has("run_id"),mode);
     }
-  } catch (error) { report(error); }
+  } catch(error){report(error);}
 }
 init();
